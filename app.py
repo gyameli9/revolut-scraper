@@ -33,7 +33,9 @@ GERMAN_STOPWORDS = {
     'straße', 'strasse', 'haus', 'stadt', 'telefon', 'fax', 'mail', 'email',
     'mo', 'di', 'mi', 'do', 'fr', 'sa', 'so', 'uhr', 'zeiten', 'öffnungszeiten',
     'alle', 'rechte', 'vorbehalten', 'copyright', 'seite', 'sehr', 'geehrte',
-    'inhalte', 'haftung', 'links', 'urheberrecht', 'widerspruch', 'angaben'
+    'inhalte', 'haftung', 'links', 'urheberrecht', 'widerspruch', 'angaben',
+    'erhältst', 'bekommst', 'zugangsdaten', 'gebäude', 'einem', 'einer', 'einen',
+    'eines', 'dass', 'wenn', 'bitte', 'diese', 'dieser', 'nach', 'oder'
 }
 
 def decode_cloudflare_email(cf_hex):
@@ -134,11 +136,26 @@ def extract_phone_advanced(soup, text):
                 if res != "-": return res
     return "-"
 
+def is_valid_person_name(candidate_str):
+    """Prüft strikt, ob der String aus 2 bis 3 gültigen Namenswörtern besteht."""
+    words = [w.strip(".,:;()[]\"'") for w in candidate_str.split() if w.strip(".,:;()[]\"'")]
+    if not (2 <= len(words) <= 3):
+        return False
+        
+    for w in words:
+        w_lower = w.lower()
+        if w_lower in GERMAN_STOPWORDS or len(w) < 2:
+            return False
+        # Wort muss mit einem Großbuchstaben beginnen und ein echter Name sein
+        if not re.match(r'^[A-ZÄÖÜ][a-zäöüß\-]+$', w):
+            return False
+            
+    return " ".join(words)
+
 def extract_owner_advanced(soup, raw_html):
-    """Präzisions-Erkennung für Inhaber, GFs und Holdings"""
-    if not raw_html: return "-"
+    """Präzisions-Erkennung für Inhaber, GFs und Holdings mit Unknown Fallback"""
+    if not raw_html: return "Unknown"
     
-    # Text in saubere Zeilen zerlegen
     if soup:
         soup_copy = BeautifulSoup(str(soup), 'html.parser')
         for tag in soup_copy.find_all(["br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4"]):
@@ -155,54 +172,33 @@ def extract_owner_advanced(soup, raw_html):
         'komplementär', 'komplementärin', 'vertretungsberechtigt', 'ansprechpartner'
     ]
 
-    # 1. Zeile-für-Zeile & Folgezeilen-Scans
     for i, line in enumerate(lines):
         line_lower = line.lower()
         for role in roles:
             if role in line_lower:
-                # Textteil direkt nach der Rolle in derselben Zeile
                 after_role = re.sub(r'(?i)^.*?' + re.escape(role) + r'\s*[:|-]?\s*', '', line).strip()
                 
-                # Check A: Holding / Muttergesellschaft auf derselben Zeile
+                # Check A: Holding / Muttergesellschaft
                 if any(corp in after_role.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding', 'verwaltungs']):
                     corp_match = re.search(r'([A-ZÄÖÜ0-9][A-Za-z0-9ÄÖÜäöüß\s\.\&\-]+\s*(?:GmbH|AG|KG|Ltd|Holding|Verwaltungs\s*GmbH))', after_role, re.IGNORECASE)
                     if corp_match: return corp_match.group(1).strip()
-                    return after_role[:45]
 
-                # Check B: Personennamen auf derselben Zeile
+                # Check B: Personennamen auf derselben Zeile (Strikte 2-3 Wörter Prüfung)
                 if after_role:
-                    name_match = re.search(r'([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})', after_role)
-                    if name_match:
-                        cand = name_match.group(1).strip()
-                        if not any(sw in cand.lower() for sw in GERMAN_STOPWORDS):
-                            return cand
+                    valid_name = is_valid_person_name(after_role)
+                    if valid_name: return valid_name
 
-                # Check C: Name / Holding steht auf der DIREKTEN Folgezeile (HTML <br> Fall)
+                # Check C: Folgezeile prüfen (HTML <br> Fall)
                 if i + 1 < len(lines):
                     next_line = lines[i+1].strip()
                     if any(corp in next_line.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding']):
                         corp_match = re.search(r'([A-ZÄÖÜ0-9][A-Za-z0-9ÄÖÜäöüß\s\.\&\-]+\s*(?:GmbH|AG|KG|Ltd|Holding))', next_line, re.IGNORECASE)
                         if corp_match: return corp_match.group(1).strip()
-                        return next_line[:45]
 
-                    name_match = re.search(r'^([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})$', next_line)
-                    if name_match:
-                        cand = name_match.group(1).strip()
-                        if not any(sw in cand.lower() for sw in GERMAN_STOPWORDS):
-                            return cand
+                    valid_name = is_valid_person_name(next_line)
+                    if valid_name: return valid_name
 
-    # 2. Positions-Fallback: Direkt nach "Angaben gemäß § 5 TMG" suchen
-    for i, line in enumerate(lines[:40]):
-        if any(h in line.lower() for h in ['angaben gemäß § 5 tmg', 'angaben gem. § 5 tmg', 'impressum']):
-            for offset in range(1, 4):
-                if i + offset < len(lines):
-                    cand_line = lines[i+offset].strip()
-                    name_match = re.search(r'^([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})$', cand_line)
-                    if name_match:
-                        cand = name_match.group(1).strip()
-                        if not any(sw in cand.lower() for sw in GERMAN_STOPWORDS):
-                            return cand
-    return "-"
+    return "Unknown"
 
 def find_website_from_name(query):
     query = query.strip()
@@ -224,7 +220,7 @@ def scrape_company(original_input):
         return {
             "Eingabe": original_input,
             "Unternehmensname": original_input,
-            "Inhaber / GF / Contact": "-",
+            "Inhaber / GF / Contact": "Unknown",
             "Telefonnummer": "-",
             "E-Mail-Adresse": "-",
             "Webseite": "-",
@@ -294,10 +290,10 @@ def scrape_company(original_input):
         "Telefonnummer": phone,
         "E-Mail-Adresse": emails_formatted,
         "Webseite": base_url,
-        "Status": "✅ Erfolg" if emails_formatted != "-" or phone != "-" or owner != "-" else "⚠️ Teilweise"
+        "Status": "✅ Erfolg" if emails_formatted != "-" or phone != "-" or owner != "Unknown" else "⚠️ Teilweise"
     }
 
-# --- 2. USER INTERFACE (LIVE TIMER & PAUSE/RESUME) ---
+# --- 2. USER INTERFACE (STATE & BUTTONS) ---
 
 st.set_page_config(page_title="GYameli's Pro Scraper", page_icon="🚀", layout="wide")
 
@@ -316,25 +312,32 @@ if "total_count" not in st.session_state:
     st.session_state.total_count = 0
 if "start_time" not in st.session_state:
     st.session_state.start_time = None
+if "input_text_val" not in st.session_state:
+    st.session_state.input_text_val = ""
 
+# Eingabefeld mit Session-State-Verknüpfung
 input_text = st.text_area(
     "Leads eingeben (1 pro Zeile, bis zu 300 Einträge)", 
+    value=st.session_state.input_text_val,
     height=200, 
-    placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com"
+    placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com",
+    key="lead_text_area"
 )
 
-col1, col2, col3 = st.columns([1, 1, 3])
+col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
 
 with col1:
     if st.button("🚀 Neu Starten", type="primary"):
         lines = [line.strip() for line in input_text.split('\n') if line.strip()]
         if lines:
+            st.session_state.input_text_val = input_text
             st.session_state.queue = lines
             st.session_state.results = []
             st.session_state.completed_count = 0
             st.session_state.total_count = len(lines)
             st.session_state.start_time = time.time()
             st.session_state.state = "running"
+            st.rerun()
 
 with col2:
     if st.session_state.state == "running":
@@ -346,7 +349,17 @@ with col2:
             st.session_state.state = "running"
             st.rerun()
 
-# --- FORTSCHRITTSBALKEN & LIVE-TIMER ---
+with col3:
+    if st.button("🗑️ Liste löschen"):
+        st.session_state.input_text_val = ""
+        st.session_state.results = []
+        st.session_state.queue = []
+        st.session_state.completed_count = 0
+        st.session_state.total_count = 0
+        st.session_state.state = "idle"
+        st.rerun()
+
+# --- FORTSCHRITTSBALKEN & TIMER ---
 
 if st.session_state.state in ["running", "paused"] or st.session_state.completed_count > 0:
     progress = (st.session_state.completed_count / st.session_state.total_count) if st.session_state.total_count > 0 else 0
