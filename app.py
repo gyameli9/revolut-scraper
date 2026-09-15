@@ -194,6 +194,22 @@ def extract_owner_advanced(soup, raw_html):
 
     return "Unknown"
 
+def split_first_last_name(owner_str):
+    """Trennt den Inhabernamen sauber in Vorname und Nachname"""
+    if not owner_str or owner_str == "Unknown" or owner_str == "-":
+        return "Unknown", "Unknown"
+    
+    # Falls eine Holding oder juristische Person erkannt wurde
+    if any(corp in owner_str.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding', 'verwaltungs']):
+        return "-", owner_str
+        
+    parts = owner_str.strip().split()
+    if len(parts) == 1:
+        return "-", parts[0]
+    elif len(parts) >= 2:
+        return " ".join(parts[:-1]), parts[-1]
+    return "Unknown", "Unknown"
+
 def find_website_from_name(query):
     query = query.strip()
     if "." in query and " " not in query:
@@ -212,13 +228,14 @@ def scrape_company(original_input):
     url = find_website_from_name(original_input)
     if not url:
         return {
-            "Eingabe": original_input,
+            "Vorname": "Unknown",
+            "Nachname": "Unknown",
             "Unternehmensname": original_input,
-            "Inhaber / GF / Contact": "Unknown",
-            "Telefonnummer": "-",
             "E-Mail-Adresse": "-",
+            "Telefonnummer": "-",
             "Webseite": "-",
-            "Status": "❌ Keine Webseite"
+            "Status": "❌ Keine Webseite",
+            "Eingabe": original_input
         }
 
     headers = {
@@ -274,17 +291,22 @@ def scrape_company(original_input):
     main_soup = soups[0] if soups else None
     
     emails_formatted = extract_all_emails_advanced(combined_html, main_soup, domain)
-    owner = extract_owner_advanced(main_soup, combined_html)
+    owner_raw = extract_owner_advanced(main_soup, combined_html)
+    first_name, last_name = split_first_last_name(owner_raw)
     phone = extract_phone_advanced(main_soup, combined_html)
     
+    status_val = "✅ Erfolg" if emails_formatted != "-" else ("⚠️ Teilweise" if (phone != "-" or owner_raw != "Unknown") else "❌ Keine Daten")
+
+    # Exakte Reihenfolge der Ausgabespalten
     return {
-        "Eingabe": original_input,
+        "Vorname": first_name,
+        "Nachname": last_name,
         "Unternehmensname": company_name,
-        "Inhaber / GF / Contact": owner,
-        "Telefonnummer": phone,
         "E-Mail-Adresse": emails_formatted,
+        "Telefonnummer": phone,
         "Webseite": base_url,
-        "Status": "✅ Erfolg" if emails_formatted != "-" or phone != "-" or owner != "Unknown" else "⚠️ Teilweise"
+        "Status": status_val,
+        "Eingabe": original_input
     }
 
 # --- 2. USER INTERFACE (STATE & BUTTONS) ---
@@ -309,7 +331,6 @@ if "start_time" not in st.session_state:
 if "lead_text_area" not in st.session_state:
     st.session_state.lead_text_area = ""
 
-# CALLBACK-FUNKTION: Leert das Textfeld fehlerfrei VOR dem Rendering
 def clear_input_box():
     st.session_state.lead_text_area = ""
 
@@ -345,7 +366,6 @@ with col2:
             st.rerun()
 
 with col3:
-    # Verwendet die Callback-Funktion, um den Streamlit-Bug zu vermeiden
     st.button("🗑️ Eingabe löschen", on_click=clear_input_box)
 
 # --- FORTSCHRITTSBALKEN & TIMER ---
@@ -387,10 +407,15 @@ if st.session_state.results:
     
     st.subheader(f"📋 Ergebnisse Gesamt ({len(df_raw)} Leads)")
     
-    filter_emails_only = st.checkbox("🎯 Nur Leads mit gefundener E-Mail-Adresse anzeigen & exportieren", value=False)
+    # Filter-Auswahl (Alle vs. Nur Erfolg)
+    export_filter = st.radio(
+        "🎯 Filter für Ansicht & Export wählen:",
+        ["Alle Ergebnisse (Erfolg, Teilweise & Fehler)", "Nur Ergebnisse mit Status '✅ Erfolg' (inkl. E-Mail)"],
+        horizontal=True
+    )
     
-    if filter_emails_only:
-        df_display = df_raw[df_raw['E-Mail-Adresse'] != "-"].copy()
+    if export_filter == "Nur Ergebnisse mit Status '✅ Erfolg' (inkl. E-Mail)":
+        df_display = df_raw[df_raw['Status'] == "✅ Erfolg"].copy()
     else:
         df_display = df_raw.copy()
         
@@ -399,7 +424,7 @@ if st.session_state.results:
     st.dataframe(df_display, use_container_width=True)
     
     if df_display.empty:
-        st.warning("Keine Leads mit E-Mail-Adresse in diesem Durchlauf gefunden.")
+        st.warning("Keine Leads entsprechen dem gewählten Filter.")
     else:
         csv_data = df_display.to_csv(index=False, sep=';', encoding='utf-8-sig')
         
