@@ -9,7 +9,31 @@ from duckduckgo_search import DDGS
 import io
 import time
 
-# --- 1. EXTRAKTIONS- & SCRAPER-LOGIK ---
+# --- 1. FILTER & EXTRAKTIONS-LOGIK ---
+
+AGENCY_KEYWORDS = [
+    'design', 'webdesign', 'agentur', 'media', 'werbeagentur', 'marketing',
+    'hosting', 'wordpress', 'jimdo', 'wix', 'typograf', 'it-service', 
+    'software', 'dev', 'creator', 'disclaimer', 'datenschutz', 'webmaster',
+    'provider', 'strato', 'ionos', 'hosteurope', 'netzwerk', 'pixel'
+]
+
+PRIORITY_PREFIXES = [
+    'info@', 'empfang@', 'kontakt@', 'contact@', 'buchhaltung@', 'office@', 
+    'hallo@', 'hello@', 'service@', 'rezeption@', 'mail@', 'post@', 
+    'willkommen@', 'anfrage@', 'zentrale@'
+]
+
+GERMAN_STOPWORDS = {
+    'riesige', 'aufenthalte', 'konzipiert', 'siehe', 'karte', 'unsere', 'über',
+    'hotel', 'zimmer', 'preise', 'cookies', 'datenschutz', 'agb', 'impressum',
+    'kontakt', 'willkommen', 'angebot', 'angebote', 'service', 'uns', 'ihr',
+    'deutschland', 'germany', 'gmbh', 'co', 'kg', 'ag', 'ltd', 'und', 'der',
+    'die', 'das', 'den', 'dem', 'des', 'für', 'mit', 'von', 'aus', 'auf',
+    'straße', 'strasse', 'haus', 'stadt', 'telefon', 'fax', 'mail', 'email',
+    'mo', 'di', 'mi', 'do', 'fr', 'sa', 'so', 'uhr', 'zeiten', 'öffnungszeiten',
+    'alle', 'rechte', 'vorbehalten', 'copyright', 'seite', 'sehr', 'geehrte'
+}
 
 def decode_cloudflare_email(cf_hex):
     try:
@@ -18,8 +42,8 @@ def decode_cloudflare_email(cf_hex):
     except:
         return ""
 
-def extract_all_emails_advanced(html_content, soup):
-    if not html_content: return []
+def extract_all_emails_advanced(html_content, soup, domain=""):
+    if not html_content: return "-"
     found_raw = []
 
     if soup:
@@ -32,11 +56,6 @@ def extract_all_emails_advanced(html_content, soup):
             if 'mailto:' in href:
                 email = href.split('mailto:')[-1].split('?')[0].strip()
                 if email: found_raw.append(email)
-
-        for img in soup.find_all(['img', 'div', 'span']):
-            for attr in ['alt', 'title', 'data-email', 'data-mail', 'data-contact']:
-                if img.has_attr(attr):
-                    found_raw.append(img[attr])
 
     text = html_content
     text = re.sub(r'(?i)\s*[\(\[]\s*at\s*[\)\]]\s*', '@', text)
@@ -53,10 +72,49 @@ def extract_all_emails_advanced(html_content, soup):
         el = e.lower().strip()
         if any(el.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']): continue
         if any(bad in el for bad in ['example.com', 'wixpress', 'sentry.io', 'schema.org', 'domain.com']): continue
+        # Webagenturen & Ersteller-Mails aussortieren
+        if any(agency_word in el for agency_word in AGENCY_KEYWORDS): continue
+        
         if '@' in el and '.' in el.split('@')[-1]:
             clean_emails.append(el)
             
-    return list(set(clean_emails))
+    clean_unique = list(set(clean_emails))
+    if not clean_unique: return "-"
+
+    # Sortierung: Generische / Info-Adressen priorisieren
+    priority = []
+    others = []
+    
+    for email in clean_unique:
+        if any(email.startswith(pref) for pref in PRIORITY_PREFIXES):
+            priority.append(email)
+        elif domain and domain in email.split('@')[-1]:
+            priority.append(email)
+        else:
+            others.append(email)
+            
+    final_ordered = priority + others
+    return ", ".join(final_ordered)
+
+def clean_and_format_phone(raw_phone):
+    if not raw_phone or raw_phone == "-": return "-"
+    
+    # Sonderzeichen & Buchstaben entfernen (nur + und Ziffern behalten)
+    cleaned = re.sub(r'[^\d+]', '', raw_phone)
+    
+    if cleaned.startswith('0049'):
+        cleaned = '+49' + cleaned[4:]
+    elif cleaned.startswith('0') and not cleaned.startswith('00'):
+        cleaned = '+49' + cleaned[1:]
+    elif cleaned.startswith('49') and not cleaned.startswith('+'):
+        cleaned = '+' + cleaned
+    elif not cleaned.startswith('+') and len(cleaned) >= 6:
+        cleaned = '+49' + cleaned
+
+    digits = re.sub(r'\D', '', cleaned)
+    if 8 <= len(digits) <= 15:
+        return cleaned
+    return "-"
 
 def extract_phone_advanced(soup, text):
     if soup:
@@ -64,10 +122,8 @@ def extract_phone_advanced(soup, text):
             href = a['href'].lower()
             if 'tel:' in href:
                 raw_tel = href.split('tel:')[-1].strip()
-                clean_tel = re.sub(r'[^\d\+]', ' ', raw_tel)
-                clean_tel = ' '.join(clean_tel.split())
-                if len(re.sub(r'\D', '', clean_tel)) >= 6:
-                    return clean_tel
+                res = clean_and_format_phone(raw_tel)
+                if res != "-": return res
 
     if text:
         patterns = [
@@ -78,44 +134,39 @@ def extract_phone_advanced(soup, text):
         for p in patterns:
             match = re.search(p, text, re.IGNORECASE)
             if match:
-                phone = match.group(1).strip()
-                digits_only = re.sub(r'\D', '', phone)
-                if len(digits_only) >= 6 and len(digits_only) <= 15:
-                    return phone
+                res = clean_and_format_phone(match.group(1))
+                if res != "-": return res
     return "-"
 
-def extract_owner_advanced(soup, raw_html):
+def extract_owner_strict(soup, raw_html):
     if not raw_html: return "-"
     
-    clean_text = raw_html
+    target_lines = []
     if soup:
-        for tag in soup.find_all(["br", "p", "div", "tr", "li"]):
-            tag.append("\n")
-        clean_text = soup.get_text(separator=' ')
+        for tag in soup.find_all(["p", "div", "li", "td", "span"]):
+            text_line = tag.get_text(strip=True)
+            if any(k in text_line.lower() for k in ['inhaber', 'geschäftsführer', 'vertreten durch', 'prokurist', 'vorstand', 'ceo', 'owner', 'gründer']):
+                target_lines.append(text_line)
+                
+    search_scope = "\n".join(target_lines) if target_lines else (soup.get_text(separator='\n') if soup else raw_html)
 
-    # Erweitertes Keyword-Set für Entscheidungsfinder, Inhaber & Stakeholder
     patterns = [
-        r'(?:Vertreten durch|Geschäftsführer(?:in)?|Geschäftsführung|Inhaber(?:in)?|Inh\.|GF|CEO|COO|CFO|CTO|'
-        r'Vorstand|Prokurist(?:in)?|Gründer(?:in)?|Founder|Partner(?:in)?|Managing Director|Director|'
-        r'Ansprechpartner(?:in)?|Point of Contact|Contact Person|Stakeholder|Gesellschafter(?:in)?|President|Owner|'
-        r'Verantwortlich(?:er|e)?|Leitung|Vertretungsberechtigt(?:e|er)?)\s*[:|-]?\s*'
-        r'([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,3})',
-        
-        r'(?:Angaben gemäß § 5 TMG|Impressum)\s*[\r\n]+(?:[A-Za-z0-9\s\.\-]+\n)?'
-        r'([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,3})'
+        r'(?:Vertreten durch|Geschäftsführer(?:in)?|Geschäftsführung|Inhaber(?:in)?|Inh\.|GF|CEO|COO|CFO|Vorstand|Prokurist(?:in)?|Gründer(?:in)?|Founder|Owner|Partner(?:in)?)\s*[:|-]?\s*([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})'
     ]
     
     for p in patterns:
-        match = re.search(p, clean_text, re.IGNORECASE)
-        if match:
-            candidate = match.group(1).strip()
-            bad_words = [
-                'gmbh', 'ag', 'ltd', 'straße', 'strasse', 'telefon', 'email', 
-                'impressum', 'kontakt', 'germany', 'deutschland', 'tel', 'fax', 
-                'registergericht', 'hrb', 'ust', 'vat'
-            ]
-            if not any(bw in candidate.lower() for bw in bad_words):
-                return candidate
+        matches = re.findall(p, search_scope)
+        for candidate in matches:
+            words = candidate.strip().split()
+            if 2 <= len(words) <= 3:
+                valid = True
+                for w in words:
+                    w_lower = w.lower()
+                    if w_lower in GERMAN_STOPWORDS or len(w) < 2 or not w[0].isupper():
+                        valid = False
+                        break
+                if valid:
+                    return " ".join(words)
     return "-"
 
 def find_website_from_name(query):
@@ -151,10 +202,10 @@ def scrape_company(original_input):
         'Accept-Language': 'de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7'
     }
     
+    domain = urlparse(url).netloc.replace('www.', '')
     base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
     pages_to_check = [url, base_url]
     company_name = original_input
-    all_emails = []
     html_texts = []
     soups = []
     
@@ -165,14 +216,16 @@ def scrape_company(original_input):
             soup = BeautifulSoup(res.text, 'html.parser')
             soups.append(soup)
             html_texts.append(res.text)
-            all_emails.extend(extract_all_emails_advanced(res.text, soup))
             
-            if title_tag := soup.find('title'):
+            # Echten Firmennamen aus OpenGraph oder Title extrahieren
+            og_site = soup.find('meta', property='og:site_name')
+            if og_site and og_site.get('content'):
+                company_name = og_site['content'].strip()
+            elif title_tag := soup.find('title'):
                 title_text = title_tag.text.split('|')[0].split('-')[0].strip()
-                if title_text and "." in original_input:
-                    company_name = title_text
+                if title_text: company_name = title_text
 
-            keywords = ['impressum', 'kontakt', 'contact', 'about', 'legal', 'imprint', 'team', 'ansprechpartner']
+            keywords = ['impressum', 'kontakt', 'contact', 'about', 'legal', 'imprint', 'team']
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag.get('href', '').lower()
                 text = a_tag.get_text().lower()
@@ -191,14 +244,13 @@ def scrape_company(original_input):
                 soup_page = BeautifulSoup(r.text, 'html.parser')
                 soups.append(soup_page)
                 html_texts.append(r.text)
-                all_emails.extend(extract_all_emails_advanced(r.text, soup_page))
         except: continue
             
-    final_emails = list(set(all_emails))
     combined_html = "\n".join(html_texts)
     main_soup = soups[0] if soups else None
     
-    owner = extract_owner_advanced(main_soup, combined_html)
+    emails_formatted = extract_all_emails_advanced(combined_html, main_soup, domain)
+    owner = extract_owner_strict(main_soup, combined_html)
     phone = extract_phone_advanced(main_soup, combined_html)
     
     return {
@@ -206,76 +258,91 @@ def scrape_company(original_input):
         "Unternehmensname": company_name,
         "Inhaber / GF / Contact": owner,
         "Telefonnummer": phone,
-        "E-Mail-Adresse": ", ".join(final_emails) if final_emails else "-",
+        "E-Mail-Adresse": emails_formatted,
         "Webseite": base_url,
-        "Status": "✅ Erfolg" if final_emails or phone != "-" or owner != "-" else "⚠️ Teilweise"
+        "Status": "✅ Erfolg" if emails_formatted != "-" or phone != "-" or owner != "-" else "⚠️ Teilweise"
     }
 
-# --- 2. USER INTERFACE ---
+# --- 2. USER INTERFACE (PAUSE / RESUME & STATE MANAGEMENT) ---
 
 st.set_page_config(page_title="GYameli's Pro Scraper", page_icon="🚀", layout="wide")
 
 st.title("🚀 GYameli's Pro Scraper")
 st.markdown("Füge deine Unternehmensnamen oder URLs ein (z. B. direkt aus **Spalte A einer Excel-Tabelle**).")
 
-if "running" not in st.session_state:
-    st.session_state.running = False
+if "state" not in st.session_state:
+    st.session_state.state = "idle" # idle, running, paused
 if "results" not in st.session_state:
     st.session_state.results = []
+if "queue" not in st.session_state:
+    st.session_state.queue = []
+if "completed_count" not in st.session_state:
+    st.session_state.completed_count = 0
+if "total_count" not in st.session_state:
+    st.session_state.total_count = 0
 
 input_text = st.text_area(
     "Leads eingeben (1 pro Zeile, bis zu 300 Einträge)", 
     height=200, 
-    placeholder="Müller Bau GmbH\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com"
+    placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com"
 )
 
-col1, col2 = st.columns([1, 4])
+col1, col2, col3 = st.columns([1, 1, 3])
+
 with col1:
-    start_btn = st.button("🚀 Scraping starten", type="primary")
+    if st.button("🚀 Neu Starten", type="primary"):
+        lines = [line.strip() for line in input_text.split('\n') if line.strip()]
+        if lines:
+            st.session_state.queue = lines
+            st.session_state.results = []
+            st.session_state.completed_count = 0
+            st.session_state.total_count = len(lines)
+            st.session_state.state = "running"
+
 with col2:
-    stop_btn = st.button("⏹️ Scraping abbrechen & Teilergebnisse anzeigen")
+    if st.session_state.state == "running":
+        if st.button("⏸️ Pausieren"):
+            st.session_state.state = "paused"
+            st.rerun()
+    elif st.session_state.state == "paused":
+        if st.button("▶️ Fortsetzen"):
+            st.session_state.state = "running"
+            st.rerun()
 
-if stop_btn:
-    st.session_state.running = False
-    st.warning("⚠️ Scraping wurde abgebrochen. Die bisherigen Ergebnisse stehen unten bereit.")
+# --- BATCH PROCESSOR (ERLAUBT ECHTES PAUSIEREN & FORTSETZEN) ---
 
-if start_btn:
-    lines = [line.strip() for line in input_text.split('\n') if line.strip()]
-    if not lines:
-        st.warning("⚠️ Bitte füge mindestens eine URL oder einen Firmennamen ein.")
-    else:
-        st.session_state.running = True
-        st.session_state.results = []
-        
-        start_time = time.time()
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-            future_to_input = {executor.submit(scrape_company, line): line for line in lines}
-            completed = 0
+if st.session_state.state == "running" and st.session_state.queue:
+    progress_bar = st.progress(st.session_state.completed_count / st.session_state.total_count)
+    status_text = st.empty()
+    
+    # Verarbeite in 5er-Paketen, um Pausieren sauber zu ermöglichen
+    batch_size = 5
+    current_batch = st.session_state.queue[:batch_size]
+    st.session_state.queue = st.session_state.queue[batch_size:]
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_input = {executor.submit(scrape_company, line): line for line in current_batch}
+        for future in concurrent.futures.as_completed(future_to_input):
+            st.session_state.results.append(future.result())
+            st.session_state.completed_count += 1
             
-            for future in concurrent.futures.as_completed(future_to_input):
-                if not st.session_state.running:
-                    break
-                
-                st.session_state.results.append(future.result())
-                completed += 1
-                
-                elapsed_seconds = int(time.time() - start_time)
-                progress = completed / len(lines)
-                progress_bar.progress(progress)
-                status_text.markdown(f"⏱️ **Verstrichene Zeit:** {elapsed_seconds}s | **Fortschritt:** {completed} von {len(lines)} Leads verarbeitet ({int(progress * 100)}%)")
+    progress = st.session_state.completed_count / st.session_state.total_count
+    progress_bar.progress(progress)
+    status_text.markdown(f"⏳ **Fortschritt:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%)")
+    
+    if not st.session_state.queue:
+        st.session_state.state = "idle"
+        st.success("✅ Scraping vollständig beendet!")
+    
+    st.rerun()
 
-        total_time = round(time.time() - start_time, 1)
-        if st.session_state.running:
-            status_text.markdown(f"✅ **Scraping beendet!** {len(st.session_state.results)} Leads in **{total_time} Sekunden** verarbeitet.")
-        st.session_state.running = False
+elif st.session_state.state == "paused":
+    st.warning(f"⏸️ Scraping pausiert. {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet. Klicke auf '▶️ Fortsetzen', um weiterzumachen.")
+
+# --- ERGEBNIS-TABELLE & DOWNLOADS ---
 
 if st.session_state.results:
     df = pd.DataFrame(st.session_state.results)
-    
-    # 1-basierte Nummerierung
     df.index = range(1, len(df) + 1)
     
     st.subheader(f"📋 Ergebnisse ({len(df)} Leads)")
