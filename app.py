@@ -343,13 +343,9 @@ with col2:
             st.rerun()
 
 with col3:
-    if st.button("🗑️ Liste löschen"):
+    if st.button("🗑️ Eingabe löschen"):
         st.session_state.input_text_val = ""
-        st.session_state.results = []
-        st.session_state.queue = []
-        st.session_state.completed_count = 0
-        st.session_state.total_count = 0
-        st.session_state.state = "idle"
+        st.session_state.lead_text_area = ""
         st.rerun()
 
 # --- FORTSCHRITTSBALKEN & TIMER ---
@@ -391,7 +387,6 @@ if st.session_state.results:
     
     st.subheader(f"📋 Ergebnisse Gesamt ({len(df_raw)} Leads)")
     
-    # Filter-Checkbox für E-Mail-Adressen
     filter_emails_only = st.checkbox("🎯 Nur Leads mit gefundener E-Mail-Adresse anzeigen & exportieren", value=False)
     
     if filter_emails_only:
