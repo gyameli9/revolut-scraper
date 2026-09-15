@@ -32,7 +32,8 @@ GERMAN_STOPWORDS = {
     'die', 'das', 'den', 'dem', 'des', 'für', 'mit', 'von', 'aus', 'auf',
     'straße', 'strasse', 'haus', 'stadt', 'telefon', 'fax', 'mail', 'email',
     'mo', 'di', 'mi', 'do', 'fr', 'sa', 'so', 'uhr', 'zeiten', 'öffnungszeiten',
-    'alle', 'rechte', 'vorbehalten', 'copyright', 'seite', 'sehr', 'geehrte'
+    'alle', 'rechte', 'vorbehalten', 'copyright', 'seite', 'sehr', 'geehrte',
+    'inhalte', 'haftung', 'links', 'urheberrecht', 'widerspruch', 'angaben'
 }
 
 def decode_cloudflare_email(cf_hex):
@@ -72,16 +73,13 @@ def extract_all_emails_advanced(html_content, soup, domain=""):
         el = e.lower().strip()
         if any(el.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']): continue
         if any(bad in el for bad in ['example.com', 'wixpress', 'sentry.io', 'schema.org', 'domain.com']): continue
-        # Webagenturen & Ersteller-Mails aussortieren
         if any(agency_word in el for agency_word in AGENCY_KEYWORDS): continue
-        
         if '@' in el and '.' in el.split('@')[-1]:
             clean_emails.append(el)
             
     clean_unique = list(set(clean_emails))
     if not clean_unique: return "-"
 
-    # Sortierung: Generische / Info-Adressen priorisieren
     priority = []
     others = []
     
@@ -98,8 +96,6 @@ def extract_all_emails_advanced(html_content, soup, domain=""):
 
 def clean_and_format_phone(raw_phone):
     if not raw_phone or raw_phone == "-": return "-"
-    
-    # Sonderzeichen & Buchstaben entfernen (nur + und Ziffern behalten)
     cleaned = re.sub(r'[^\d+]', '', raw_phone)
     
     if cleaned.startswith('0049'):
@@ -138,35 +134,74 @@ def extract_phone_advanced(soup, text):
                 if res != "-": return res
     return "-"
 
-def extract_owner_strict(soup, raw_html):
+def extract_owner_advanced(soup, raw_html):
+    """Präzisions-Erkennung für Inhaber, GFs und Holdings"""
     if not raw_html: return "-"
     
-    target_lines = []
+    # Text in saubere Zeilen zerlegen
     if soup:
-        for tag in soup.find_all(["p", "div", "li", "td", "span"]):
-            text_line = tag.get_text(strip=True)
-            if any(k in text_line.lower() for k in ['inhaber', 'geschäftsführer', 'vertreten durch', 'prokurist', 'vorstand', 'ceo', 'owner', 'gründer']):
-                target_lines.append(text_line)
-                
-    search_scope = "\n".join(target_lines) if target_lines else (soup.get_text(separator='\n') if soup else raw_html)
+        soup_copy = BeautifulSoup(str(soup), 'html.parser')
+        for tag in soup_copy.find_all(["br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4"]):
+            tag.append("\n")
+        lines = [re.sub(r'\s+', ' ', line).strip() for line in soup_copy.get_text().split('\n') if line.strip()]
+    else:
+        lines = [re.sub(r'\s+', ' ', line).strip() for line in raw_html.split('\n') if line.strip()]
 
-    patterns = [
-        r'(?:Vertreten durch|Geschäftsführer(?:in)?|Geschäftsführung|Inhaber(?:in)?|Inh\.|GF|CEO|COO|CFO|Vorstand|Prokurist(?:in)?|Gründer(?:in)?|Founder|Owner|Partner(?:in)?)\s*[:|-]?\s*([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})'
+    roles = [
+        'geschäftsführerin', 'geschäftsführer', 'geschäftsführung', 'vertreten durch',
+        'inhaberin', 'inhaber', 'inh.', 'gf', 'ceo', 'coo', 'cfo', 'vorstand',
+        'prokurist', 'prokuristin', 'gründerin', 'gründer', 'founder', 'owner',
+        'managing director', 'director', 'gesellschafterin', 'gesellschafter',
+        'komplementär', 'komplementärin', 'vertretungsberechtigt', 'ansprechpartner'
     ]
-    
-    for p in patterns:
-        matches = re.findall(p, search_scope)
-        for candidate in matches:
-            words = candidate.strip().split()
-            if 2 <= len(words) <= 3:
-                valid = True
-                for w in words:
-                    w_lower = w.lower()
-                    if w_lower in GERMAN_STOPWORDS or len(w) < 2 or not w[0].isupper():
-                        valid = False
-                        break
-                if valid:
-                    return " ".join(words)
+
+    # 1. Zeile-für-Zeile & Folgezeilen-Scans
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        for role in roles:
+            if role in line_lower:
+                # Textteil direkt nach der Rolle in derselben Zeile
+                after_role = re.sub(r'(?i)^.*?' + re.escape(role) + r'\s*[:|-]?\s*', '', line).strip()
+                
+                # Check A: Holding / Muttergesellschaft auf derselben Zeile
+                if any(corp in after_role.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding', 'verwaltungs']):
+                    corp_match = re.search(r'([A-ZÄÖÜ0-9][A-Za-z0-9ÄÖÜäöüß\s\.\&\-]+\s*(?:GmbH|AG|KG|Ltd|Holding|Verwaltungs\s*GmbH))', after_role, re.IGNORECASE)
+                    if corp_match: return corp_match.group(1).strip()
+                    return after_role[:45]
+
+                # Check B: Personennamen auf derselben Zeile
+                if after_role:
+                    name_match = re.search(r'([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})', after_role)
+                    if name_match:
+                        cand = name_match.group(1).strip()
+                        if not any(sw in cand.lower() for sw in GERMAN_STOPWORDS):
+                            return cand
+
+                # Check C: Name / Holding steht auf der DIREKTEN Folgezeile (HTML <br> Fall)
+                if i + 1 < len(lines):
+                    next_line = lines[i+1].strip()
+                    if any(corp in next_line.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding']):
+                        corp_match = re.search(r'([A-ZÄÖÜ0-9][A-Za-z0-9ÄÖÜäöüß\s\.\&\-]+\s*(?:GmbH|AG|KG|Ltd|Holding))', next_line, re.IGNORECASE)
+                        if corp_match: return corp_match.group(1).strip()
+                        return next_line[:45]
+
+                    name_match = re.search(r'^([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})$', next_line)
+                    if name_match:
+                        cand = name_match.group(1).strip()
+                        if not any(sw in cand.lower() for sw in GERMAN_STOPWORDS):
+                            return cand
+
+    # 2. Positions-Fallback: Direkt nach "Angaben gemäß § 5 TMG" suchen
+    for i, line in enumerate(lines[:40]):
+        if any(h in line.lower() for h in ['angaben gemäß § 5 tmg', 'angaben gem. § 5 tmg', 'impressum']):
+            for offset in range(1, 4):
+                if i + offset < len(lines):
+                    cand_line = lines[i+offset].strip()
+                    name_match = re.search(r'^([A-ZÄÖÜ][a-zäöüß\-]+(?:\s+[A-ZÄÖÜ][a-zäöüß\-]+){1,2})$', cand_line)
+                    if name_match:
+                        cand = name_match.group(1).strip()
+                        if not any(sw in cand.lower() for sw in GERMAN_STOPWORDS):
+                            return cand
     return "-"
 
 def find_website_from_name(query):
@@ -217,7 +252,6 @@ def scrape_company(original_input):
             soups.append(soup)
             html_texts.append(res.text)
             
-            # Echten Firmennamen aus OpenGraph oder Title extrahieren
             og_site = soup.find('meta', property='og:site_name')
             if og_site and og_site.get('content'):
                 company_name = og_site['content'].strip()
@@ -250,7 +284,7 @@ def scrape_company(original_input):
     main_soup = soups[0] if soups else None
     
     emails_formatted = extract_all_emails_advanced(combined_html, main_soup, domain)
-    owner = extract_owner_strict(main_soup, combined_html)
+    owner = extract_owner_advanced(main_soup, combined_html)
     phone = extract_phone_advanced(main_soup, combined_html)
     
     return {
@@ -263,7 +297,7 @@ def scrape_company(original_input):
         "Status": "✅ Erfolg" if emails_formatted != "-" or phone != "-" or owner != "-" else "⚠️ Teilweise"
     }
 
-# --- 2. USER INTERFACE (PAUSE / RESUME & STATE MANAGEMENT) ---
+# --- 2. USER INTERFACE (LIVE TIMER & PAUSE/RESUME) ---
 
 st.set_page_config(page_title="GYameli's Pro Scraper", page_icon="🚀", layout="wide")
 
@@ -271,7 +305,7 @@ st.title("🚀 GYameli's Pro Scraper")
 st.markdown("Füge deine Unternehmensnamen oder URLs ein (z. B. direkt aus **Spalte A einer Excel-Tabelle**).")
 
 if "state" not in st.session_state:
-    st.session_state.state = "idle" # idle, running, paused
+    st.session_state.state = "idle"
 if "results" not in st.session_state:
     st.session_state.results = []
 if "queue" not in st.session_state:
@@ -280,6 +314,8 @@ if "completed_count" not in st.session_state:
     st.session_state.completed_count = 0
 if "total_count" not in st.session_state:
     st.session_state.total_count = 0
+if "start_time" not in st.session_state:
+    st.session_state.start_time = None
 
 input_text = st.text_area(
     "Leads eingeben (1 pro Zeile, bis zu 300 Einträge)", 
@@ -297,6 +333,7 @@ with col1:
             st.session_state.results = []
             st.session_state.completed_count = 0
             st.session_state.total_count = len(lines)
+            st.session_state.start_time = time.time()
             st.session_state.state = "running"
 
 with col2:
@@ -309,13 +346,22 @@ with col2:
             st.session_state.state = "running"
             st.rerun()
 
-# --- BATCH PROCESSOR (ERLAUBT ECHTES PAUSIEREN & FORTSETZEN) ---
+# --- FORTSCHRITTSBALKEN & LIVE-TIMER ---
+
+if st.session_state.state in ["running", "paused"] or st.session_state.completed_count > 0:
+    progress = (st.session_state.completed_count / st.session_state.total_count) if st.session_state.total_count > 0 else 0
+    st.progress(progress)
+    
+    elapsed = int(time.time() - st.session_state.start_time) if st.session_state.start_time else 0
+    
+    if st.session_state.state == "running":
+        st.markdown(f"⏱️ **Verstrichene Zeit:** {elapsed}s | ⏳ **Fortschritt:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%)")
+    elif st.session_state.state == "paused":
+        st.warning(f"⏸️ **Pausiert nach {elapsed}s:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%). Klicke auf '▶️ Fortsetzen', um weiterzumachen.")
+
+# --- BATCH PROCESSOR ---
 
 if st.session_state.state == "running" and st.session_state.queue:
-    progress_bar = st.progress(st.session_state.completed_count / st.session_state.total_count)
-    status_text = st.empty()
-    
-    # Verarbeite in 5er-Paketen, um Pausieren sauber zu ermöglichen
     batch_size = 5
     current_batch = st.session_state.queue[:batch_size]
     st.session_state.queue = st.session_state.queue[batch_size:]
@@ -326,18 +372,11 @@ if st.session_state.state == "running" and st.session_state.queue:
             st.session_state.results.append(future.result())
             st.session_state.completed_count += 1
             
-    progress = st.session_state.completed_count / st.session_state.total_count
-    progress_bar.progress(progress)
-    status_text.markdown(f"⏳ **Fortschritt:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%)")
-    
     if not st.session_state.queue:
         st.session_state.state = "idle"
-        st.success("✅ Scraping vollständig beendet!")
+        st.success(f"✅ Scraping vollständig beendet! {st.session_state.completed_count} Leads in {int(time.time() - st.session_state.start_time)}s verarbeitet.")
     
     st.rerun()
-
-elif st.session_state.state == "paused":
-    st.warning(f"⏸️ Scraping pausiert. {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet. Klicke auf '▶️ Fortsetzen', um weiterzumachen.")
 
 # --- ERGEBNIS-TABELLE & DOWNLOADS ---
 
