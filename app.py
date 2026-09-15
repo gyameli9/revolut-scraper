@@ -137,7 +137,6 @@ def extract_phone_advanced(soup, text):
     return "-"
 
 def is_valid_person_name(candidate_str):
-    """Prüft strikt, ob der String aus 2 bis 3 gültigen Namenswörtern besteht."""
     words = [w.strip(".,:;()[]\"'") for w in candidate_str.split() if w.strip(".,:;()[]\"'")]
     if not (2 <= len(words) <= 3):
         return False
@@ -146,14 +145,12 @@ def is_valid_person_name(candidate_str):
         w_lower = w.lower()
         if w_lower in GERMAN_STOPWORDS or len(w) < 2:
             return False
-        # Wort muss mit einem Großbuchstaben beginnen und ein echter Name sein
         if not re.match(r'^[A-ZÄÖÜ][a-zäöüß\-]+$', w):
             return False
             
     return " ".join(words)
 
 def extract_owner_advanced(soup, raw_html):
-    """Präzisions-Erkennung für Inhaber, GFs und Holdings mit Unknown Fallback"""
     if not raw_html: return "Unknown"
     
     if soup:
@@ -178,17 +175,14 @@ def extract_owner_advanced(soup, raw_html):
             if role in line_lower:
                 after_role = re.sub(r'(?i)^.*?' + re.escape(role) + r'\s*[:|-]?\s*', '', line).strip()
                 
-                # Check A: Holding / Muttergesellschaft
                 if any(corp in after_role.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding', 'verwaltungs']):
                     corp_match = re.search(r'([A-ZÄÖÜ0-9][A-Za-z0-9ÄÖÜäöüß\s\.\&\-]+\s*(?:GmbH|AG|KG|Ltd|Holding|Verwaltungs\s*GmbH))', after_role, re.IGNORECASE)
                     if corp_match: return corp_match.group(1).strip()
 
-                # Check B: Personennamen auf derselben Zeile (Strikte 2-3 Wörter Prüfung)
                 if after_role:
                     valid_name = is_valid_person_name(after_role)
                     if valid_name: return valid_name
 
-                # Check C: Folgezeile prüfen (HTML <br> Fall)
                 if i + 1 < len(lines):
                     next_line = lines[i+1].strip()
                     if any(corp in next_line.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding']):
@@ -315,7 +309,6 @@ if "start_time" not in st.session_state:
 if "input_text_val" not in st.session_state:
     st.session_state.input_text_val = ""
 
-# Eingabefeld mit Session-State-Verknüpfung
 input_text = st.text_area(
     "Leads eingeben (1 pro Zeile, bis zu 300 Einträge)", 
     value=st.session_state.input_text_val,
@@ -391,34 +384,47 @@ if st.session_state.state == "running" and st.session_state.queue:
     
     st.rerun()
 
-# --- ERGEBNIS-TABELLE & DOWNLOADS ---
+# --- ERGEBNIS-TABELLE & EXPORT ---
 
 if st.session_state.results:
-    df = pd.DataFrame(st.session_state.results)
-    df.index = range(1, len(df) + 1)
+    df_raw = pd.DataFrame(st.session_state.results)
     
-    st.subheader(f"📋 Ergebnisse ({len(df)} Leads)")
-    st.dataframe(df, use_container_width=True)
+    st.subheader(f"📋 Ergebnisse Gesamt ({len(df_raw)} Leads)")
     
-    csv_data = df.to_csv(index=False, sep=';', encoding='utf-8-sig')
+    # Filter-Checkbox für E-Mail-Adressen
+    filter_emails_only = st.checkbox("🎯 Nur Leads mit gefundener E-Mail-Adresse anzeigen & exportieren", value=False)
     
-    col_dl1, col_dl2 = st.columns([1, 1])
-    with col_dl1:
-        st.download_button(
-            label="📊 Für Google Sheets herunterladen (CSV)",
-            data=csv_data,
-            file_name="GYameli_Leads_GoogleSheets.csv",
-            mime="text/csv"
-        )
-    with col_dl2:
-        output_excel = io.BytesIO()
-        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False)
-        output_excel.seek(0)
+    if filter_emails_only:
+        df_display = df_raw[df_raw['E-Mail-Adresse'] != "-"].copy()
+    else:
+        df_display = df_raw.copy()
         
-        st.download_button(
-            label="📥 Als Excel herunterladen (.xlsx)",
-            data=output_excel,
-            file_name="GYameli_Leads.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    df_display.index = range(1, len(df_display) + 1)
+    
+    st.dataframe(df_display, use_container_width=True)
+    
+    if df_display.empty:
+        st.warning("Keine Leads mit E-Mail-Adresse in diesem Durchlauf gefunden.")
+    else:
+        csv_data = df_display.to_csv(index=False, sep=';', encoding='utf-8-sig')
+        
+        col_dl1, col_dl2 = st.columns([1, 1])
+        with col_dl1:
+            st.download_button(
+                label=f"📊 Für Google Sheets herunterladen ({len(df_display)} Leads)",
+                data=csv_data,
+                file_name="GYameli_Leads_GoogleSheets.csv",
+                mime="text/csv"
+            )
+        with col_dl2:
+            output_excel = io.BytesIO()
+            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+                df_display.to_excel(writer, index=False)
+            output_excel.seek(0)
+            
+            st.download_button(
+                label=f"📥 Als Excel herunterladen ({len(df_display)} Leads)",
+                data=output_excel,
+                file_name="GYameli_Leads.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
