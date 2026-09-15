@@ -306,12 +306,15 @@ if "total_count" not in st.session_state:
     st.session_state.total_count = 0
 if "start_time" not in st.session_state:
     st.session_state.start_time = None
-if "input_text_val" not in st.session_state:
-    st.session_state.input_text_val = ""
+if "lead_text_area" not in st.session_state:
+    st.session_state.lead_text_area = ""
+
+# CALLBACK-FUNKTION: Leert das Textfeld fehlerfrei VOR dem Rendering
+def clear_input_box():
+    st.session_state.lead_text_area = ""
 
 input_text = st.text_area(
     "Leads eingeben (1 pro Zeile, bis zu 300 Einträge)", 
-    value=st.session_state.input_text_val,
     height=200, 
     placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com",
     key="lead_text_area"
@@ -323,7 +326,6 @@ with col1:
     if st.button("🚀 Neu Starten", type="primary"):
         lines = [line.strip() for line in input_text.split('\n') if line.strip()]
         if lines:
-            st.session_state.input_text_val = input_text
             st.session_state.queue = lines
             st.session_state.results = []
             st.session_state.completed_count = 0
@@ -343,10 +345,8 @@ with col2:
             st.rerun()
 
 with col3:
-    if st.button("🗑️ Eingabe löschen"):
-        st.session_state.input_text_val = ""
-        st.session_state.lead_text_area = ""
-        st.rerun()
+    # Verwendet die Callback-Funktion, um den Streamlit-Bug zu vermeiden
+    st.button("🗑️ Eingabe löschen", on_click=clear_input_box)
 
 # --- FORTSCHRITTSBALKEN & TIMER ---
 
