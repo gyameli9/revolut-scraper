@@ -195,11 +195,9 @@ def extract_owner_advanced(soup, raw_html):
     return "Unknown"
 
 def split_first_last_name(owner_str):
-    """Trennt den Inhabernamen sauber in Vorname und Nachname"""
     if not owner_str or owner_str == "Unknown" or owner_str == "-":
         return "Unknown", "Unknown"
     
-    # Falls eine Holding oder juristische Person erkannt wurde
     if any(corp in owner_str.lower() for corp in ['gmbh', 'ag', 'kg', 'ltd', 'holding', 'verwaltungs']):
         return "-", owner_str
         
@@ -297,7 +295,6 @@ def scrape_company(original_input):
     
     status_val = "✅ Erfolg" if emails_formatted != "-" else ("⚠️ Teilweise" if (phone != "-" or owner_raw != "Unknown") else "❌ Keine Daten")
 
-    # Exakte Reihenfolge der Ausgabespalten
     return {
         "Vorname": first_name,
         "Nachname": last_name,
@@ -335,7 +332,7 @@ def clear_input_box():
     st.session_state.lead_text_area = ""
 
 input_text = st.text_area(
-    "Leads eingeben (1 pro Zeile, bis zu 300 Einträge)", 
+    "Leads eingeben (1 pro Zeile, max. 100 Einträge)", 
     height=200, 
     placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com",
     key="lead_text_area"
@@ -347,6 +344,10 @@ with col1:
     if st.button("🚀 Neu Starten", type="primary"):
         lines = [line.strip() for line in input_text.split('\n') if line.strip()]
         if lines:
+            if len(lines) > 100:
+                st.warning("⚠️ Aus Stabilitätsgründen wurden nur die ersten 100 Leads übernommen.")
+                lines = lines[:100]
+                
             st.session_state.queue = lines
             st.session_state.results = []
             st.session_state.completed_count = 0
@@ -407,7 +408,6 @@ if st.session_state.results:
     
     st.subheader(f"📋 Ergebnisse Gesamt ({len(df_raw)} Leads)")
     
-    # Filter-Auswahl (Alle vs. Nur Erfolg)
     export_filter = st.radio(
         "🎯 Filter für Ansicht & Export wählen:",
         ["Alle Ergebnisse (Erfolg, Teilweise & Fehler)", "Nur Ergebnisse mit Status '✅ Erfolg' (inkl. E-Mail)"],
