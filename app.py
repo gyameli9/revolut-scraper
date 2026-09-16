@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (ERWEITERT UM INVESTOR- & REGISTERPORTALE)
+# PORTAL- UND FILTER-DOMAINEN (UM ZOLL-, EXPORT- & KATALOGPORTALE ERWEITERT)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -68,7 +68,14 @@ PORTAL_DOMAINS = [
     'keytobavaria.com', 'service.gov.uk', 'foerderdatenbank.de', 'plant-my-tree.de',
     'implisense.com', 'exportgenius.in', 'railmarket.com', 'kompass.com', 'kompass.de',
     'volza.com', 'tendata.com', 'importgenius.com', 'panjiva.com', 'dnb.com', 'dunsregistered.com',
-    'privco.com', 'creditsafe.com', 'europages.'
+    'privco.com', 'creditsafe.com', 'europages.', 'firmendata.com', 'marktplatz-mittelstand.de',
+    'defirmenkataloge.com', 'directindustry.com', 'semi.org', 'assemcorp.com', '3d-peim.org'
+]
+
+PORTAL_KEYWORDS = [
+    'katalog', 'firmenkatalog', 'firmendata', 'mittelstand', 'company-profile',
+    'yellowpages', 'tradekey', 'tradeindia', 'globalsources', 'importer', 'exporter',
+    'shipment', 'customs', 'business-index', 'company-information', 'branchen'
 ]
 
 AGENCY_KEYWORDS = [
@@ -305,6 +312,9 @@ def calculate_match_score(query, target_text):
     q_tokens = set(q_clean.split())
     t_tokens = set(t_clean.split())
     
+    if not q_tokens.intersection(t_tokens):
+        return 0
+
     fuzzy = difflib.SequenceMatcher(None, q_clean, t_clean).ratio() * 100
     token_score = token_overlap_score(query, target_text)
     combined = (fuzzy * 0.55 + token_score * 0.45)
@@ -336,10 +346,17 @@ def is_portal_url(url):
     hostname = urlparse(url_lower).netloc.lower()
     if hostname.startswith('www.'):
         hostname = hostname[4:]
+        
     for portal in PORTAL_DOMAINS:
         portal_clean = portal.lower().rstrip('.')
         if (hostname == portal_clean or hostname.endswith('.' + portal_clean) or portal_clean in hostname):
             return True
+
+    # Heuristische Prüfung auf Verzeichnisschlüsselwörter
+    for kw in PORTAL_KEYWORDS:
+        if kw in hostname or kw in url_lower:
+            return True
+
     return False
 
 
@@ -927,6 +944,7 @@ def extract_company_candidates(soup, page_type):
     candidates = []
     if not soup: return candidates
 
+    # 1. JSON-LD
     for script in soup.find_all('script', attrs={'type': re.compile(r'application/ld\+json', re.IGNORECASE)}):
         try:
             data = json.loads(script.string or script.get_text() or "{}")
@@ -943,10 +961,12 @@ def extract_company_candidates(soup, page_type):
             walk_org(data)
         except Exception: pass
 
+    # 2. og:site_name
     og_site = soup.find('meta', property='og:site_name')
     if og_site and og_site.get('content'):
         candidates.append({"value": og_site['content'].strip(), "score": 100, "source": "og:site_name", "page": page_type})
 
+    # 3. Title tag
     title = soup.find('title')
     if title:
         t_text = re.sub(r'\s+', ' ', title.get_text(' ', strip=True)).strip()
@@ -955,6 +975,29 @@ def extract_company_candidates(soup, page_type):
             p_clean = p.strip()
             if 3 <= len(p_clean) <= 80:
                 candidates.append({"value": p_clean, "score": 60, "source": "title_tag", "page": page_type})
+
+    # 4. NEU: Direkte Extraktion rechtlicher Firmennamen aus dem Fließtext/DOM (z. B. "Germany BoBoQ GmbH")
+    text = soup.get_text(separator="\n")
+    pattern = r'([A-ZÄÖÜa-zäöüß0-9\&\.\-\s]{2,60}?\s+(?:GmbH\s+\&\s+Co\.\s+KG|GmbH\s+\&\s+Co\s+KG|Gesellschaft\s+mit\s+beschränkter\s+Haftung|GmbH|AG|KG|UG\b|e\.K\.|Limited|Ltd|e\.V\.|OHG|GbR|mbH\b))'
+    
+    for line in text.splitlines():
+        line_clean = line.strip()
+        if not line_clean or len(line_clean) > 120:
+            continue
+            
+        matches = re.findall(pattern, line_clean)
+        for match in matches:
+            cand = match.strip(" .,:;-")
+            cand = re.sub(r'^(?:angaben\s+gemäß|gesetzlich\s+vorgeschriebene\s+angaben|impressum|firma|unternehmen|willkommen\s+bei)\s*[:\.-]?\s*', '', cand, flags=re.IGNORECASE)
+            if len(cand) > 3 and cand.lower() not in {'gmbh', 'ag', 'kg', 'ug', 'mbh'}:
+                score = 110 if page_type in ['impressum', 'legal'] else 80
+                candidates.append({
+                    "value": cand,
+                    "score": score,
+                    "source": f"dom_text_{page_type}",
+                    "page": page_type
+                })
+
     return candidates
 
 
