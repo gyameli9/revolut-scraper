@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (ERWEITERT)
+# PORTAL- UND FILTER-DOMAINEN (UM ZOLL- & EXPORT-DATENBANKEN ERWEITERT)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -66,7 +66,8 @@ PORTAL_DOMAINS = [
     'enfsolar.com', 'ceginformacio.hu', 'haus-garten-freizeit.de', 'metro.it',
     'tracxn.com', 'deutsche-exportdatenbank.de', 'rocketreach.co', 'bloomberg.com',
     'keytobavaria.com', 'service.gov.uk', 'foerderdatenbank.de', 'plant-my-tree.de',
-    'implisense.com', 'exportgenius.in', 'railmarket.com', 'kompass.com', 'kompass.de'
+    'implisense.com', 'exportgenius.in', 'railmarket.com', 'kompass.com', 'kompass.de',
+    'volza.com', 'tendata.com', 'importgenius.com', 'panjiva.com', 'dnb.com', 'dunsregistered.com'
 ]
 
 AGENCY_KEYWORDS = [
@@ -303,7 +304,6 @@ def calculate_match_score(query, target_text):
     q_tokens = set(q_clean.split())
     t_tokens = set(t_clean.split())
     
-    # Schutz vor Teilübereinstimmungen wie "Bosswerk" vs "Boss"
     if not q_tokens.intersection(t_tokens):
         return 0
 
@@ -971,8 +971,9 @@ def clean_person_name_string(raw_name):
     if not raw_name: return False
     raw_name = strip_honorifics(re.sub(r'\s+', ' ', str(raw_name)).strip())
     
-    # KORREKTUR: Entferne führende Füllwörter wie "den", "der", "die", "als", "vertreten durch"
+    # Bereinigung führender Rollenbezeichnungen und Artikel ("den Geschaeftsfuehrer: Stefan Lotz" -> "Stefan Lotz")
     raw_name = re.sub(r'^(?:den|der|die|des|dem|als|vom|im|durch|mit|von)\s+', '', raw_name, flags=re.IGNORECASE)
+    raw_name = re.sub(r'^(?:geschaeftsfuehrer|geschäftsführer|inhaber|vorstand|prokurist|vertreten durch|ansprechpartner)\s*[:\.-]?\s*', '', raw_name, flags=re.IGNORECASE)
     
     raw_name = re.split(r'\s*(?:,|;|\||HRB|HRA|Tel\.?|Telefon|E-Mail|Email|geb\.?)\b', raw_name, maxsplit=1, flags=re.IGNORECASE)[0].strip(" .,:;-")
     if not raw_name or len(raw_name) > 80: return False
@@ -1007,7 +1008,6 @@ def extract_person_candidates(soup, page_type):
             role_score = ROLE_SCORES.get(matched_role, 50)
             potential_names_str = ROLE_REGEX.sub("", line_clean).strip(" :")
 
-            # Entferne Artikel/Füllwörter vor der Namensaufteilung
             potential_names_str = re.sub(r'^(?:den|der|die|des|dem|als|vom|im|durch)\s+', '', potential_names_str, flags=re.IGNORECASE).strip(" :")
 
             raw_sub_names = re.split(r'\b(?:und|sowie|&|;)\b|[,/|\n]', potential_names_str, flags=re.IGNORECASE)
@@ -1076,21 +1076,36 @@ def extract_company_legal_terms(name):
 
 
 def score_company_identity(query, candidate_name):
+    default_res = {
+        "score": 0, "exact": False, "reason": "missing_value", "similarity": 0,
+        "query_normalized": "", "candidate_normalized": "",
+        "query_legal_terms": [], "candidate_legal_terms": []
+    }
+
     if not query or not candidate_name:
-        return {"score": 0, "exact": False, "reason": "missing_value"}
+        return default_res
 
     clean_cand = clean_title_suffixes(candidate_name)
     query_norm = normalize_company_string(query)
     candidate_norm = normalize_company_string(clean_cand)
 
     if not query_norm or not candidate_norm:
-        return {"score": 0, "exact": False, "reason": "empty_normalized_value"}
+        default_res["reason"] = "empty_normalized_value"
+        default_res["query_normalized"] = query_norm
+        default_res["candidate_normalized"] = candidate_norm
+        return default_res
 
-    # Schutz vor Teilübereinstimmungen wie "Bosswerk" vs "Boss"
     q_tokens = set(query_norm.split())
     c_tokens = set(candidate_norm.split())
+
+    # Schutz vor Teilübereinstimmungen ("Bosswerk" vs "Boss")
     if not q_tokens.intersection(c_tokens):
-        return {"score": 0, "exact": False, "reason": "no_token_overlap", "similarity": 0, "query_normalized": query_norm, "candidate_normalized": candidate_norm, "query_legal_terms": [], "candidate_legal_terms": []}
+        return {
+            "score": 0, "exact": False, "reason": "no_token_overlap", "similarity": 0,
+            "query_normalized": query_norm, "candidate_normalized": candidate_norm,
+            "query_legal_terms": sorted(extract_company_legal_terms(query)),
+            "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
+        }
 
     # Exakter Match
     if query_norm == candidate_norm or query_norm.replace(" ", "") == candidate_norm.replace(" ", ""):
@@ -1101,7 +1116,7 @@ def score_company_identity(query, candidate_name):
             "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
         }
 
-    # 100 % Wort-Übereinstimmung unabhängig von Wortreihenfolge
+    # 100 % Wort-Übereinstimmung unabhängig von der Wortreihenfolge
     if q_tokens == c_tokens:
         return {
             "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
@@ -1140,11 +1155,12 @@ def rank_company_candidates(query, candidates):
         if not candidate_name: continue
         identity = score_company_identity(query, candidate_name)
         extraction_score = float(candidate.get("score", 0))
-        combined_score = (identity["score"] * 0.70) + (min(extraction_score, 120) / 120 * 30)
+        identity_score = float(identity.get("score", 0))
+        combined_score = (identity_score * 0.70) + (min(extraction_score, 120) / 120 * 30)
         ranked.append({
-            **candidate, "identity_score": identity["score"], "identity_reason": identity["reason"],
-            "identity_similarity": identity["similarity"], "combined_score": round(combined_score, 2),
-            "query_legal_terms": identity["query_legal_terms"], "candidate_legal_terms": identity["candidate_legal_terms"]
+            **candidate, "identity_score": identity_score, "identity_reason": identity.get("identity_reason", identity.get("reason", "unknown")),
+            "identity_similarity": identity.get("similarity", 0), "combined_score": round(combined_score, 2),
+            "query_legal_terms": identity.get("query_legal_terms", []), "candidate_legal_terms": identity.get("candidate_legal_terms", [])
         })
     ranked.sort(key=lambda x: x["combined_score"], reverse=True)
     return ranked
