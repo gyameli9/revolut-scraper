@@ -50,113 +50,43 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN
+# PORTAL- UND FILTER-DOMAINEN (ERWEITERT)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
-    'facebook.com',
-    'instagram.com',
-    'linkedin.com',
-    'xing.com',
-    'youtube.com',
-    'twitter.com',
-    'pinterest.com',
-    'booking.com',
-    'tripadvisor.',
-    'holidaycheck.',
-    'airbnb.',
-    'expedia.',
-    'trivago.',
-    '11880.com',
-    'gelbeseiten.de',
-    'dasoertliche.de',
-    'northdata.de',
-    'northdata.com',
-    'trustpilot.com',
-    'provenexpert.com',
-    'golocal.de',
-    'branchenbuch.',
-    'cylex.',
-    'wer-liefert-was.',
-    'wlw.de',
-    'yelp.com',
-    'kununu.com'
+    'facebook.com', 'instagram.com', 'linkedin.com', 'xing.com', 'youtube.com',
+    'twitter.com', 'pinterest.com', 'booking.com', 'tripadvisor.', 'holidaycheck.',
+    'airbnb.', 'expedia.', 'trivago.', '11880.com', 'gelbeseiten.de', 'dasoertliche.de',
+    'northdata.de', 'northdata.com', 'trustpilot.com', 'provenexpert.com', 'golocal.de',
+    'branchenbuch.', 'cylex.', 'wer-liefert-was.', 'wlw.de', 'wlw.at', 'wlw.ch',
+    'yelp.com', 'kununu.com', 'companyhouse.de', 'companyhouse.com', 'creditreform.de',
+    'zoominfo.com', 'openpr.de', 'kimeta.de', 'worldtenders.in', 'worldplaces.me',
+    'arounddeal.com', 'eximpedia.app', 'logimat-messe.de', 'handelsregister.ai',
+    'online-handelsregister.de', 'firmenwissen.de', 'dastelefonbuch.de'
 ]
 
 AGENCY_KEYWORDS = [
-    'design',
-    'webdesign',
-    'agentur',
-    'media',
-    'werbeagentur',
-    'marketing',
-    'hosting',
-    'wordpress',
-    'jimdo',
-    'wix',
-    'typograf',
-    'it-service',
-    'software',
-    'dev',
-    'creator',
-    'disclaimer',
-    'webmaster',
-    'provider',
-    'pixel'
+    'design', 'webdesign', 'agentur', 'media', 'werbeagentur', 'marketing',
+    'hosting', 'wordpress', 'jimdo', 'wix', 'typograf', 'it-service',
+    'software', 'dev', 'creator', 'disclaimer', 'webmaster', 'provider', 'pixel'
 ]
 
 INVALID_EMAIL_PREFIXES = [
-    'noreply',
-    'no-reply',
-    'donotreply',
-    'do-not-reply',
-    'bounce',
-    'mailer-daemon'
+    'noreply', 'no-reply', 'donotreply', 'do-not-reply', 'bounce', 'mailer-daemon'
 ]
 
 PRIORITY_EMAIL_PREFIXES = [
-    'info@',
-    'kontakt@',
-    'contact@',
-    'office@',
-    'service@',
-    'mail@',
-    'post@',
-    'zentrale@',
-    'empfang@',
-    'rezeption@',
-    'buchhaltung@',
-    'anfrage@'
+    'info@', 'kontakt@', 'contact@', 'office@', 'service@', 'mail@',
+    'post@', 'zentrale@', 'empfang@', 'rezeption@', 'buchhaltung@', 'anfrage@'
 ]
 
 HONORIFICS = [
-    'dr.',
-    'dr',
-    'prof.',
-    'prof',
-    'dipl.-ing.',
-    'dipl.-kfm.',
-    'dipl.-jur.',
-    'dipl.-oec.',
-    'herr',
-    'frau',
-    'mr.',
-    'mrs.',
-    'ms.'
+    'dr.', 'dr', 'prof.', 'prof', 'dipl.-ing.', 'dipl.-kfm.', 'dipl.-jur.',
+    'dipl.-oec.', 'herr', 'frau', 'mr.', 'mrs.', 'ms.'
 ]
 
 ALLOWED_LOWERCASE_PREFIXES = {
-    'von',
-    'van',
-    'zu',
-    'zum',
-    'zur',
-    'de',
-    'del',
-    'der',
-    'den',
-    'la',
-    'le'
+    'von', 'van', 'zu', 'zum', 'zur', 'de', 'del', 'der', 'den', 'la', 'le'
 }
 
 
@@ -165,26 +95,9 @@ ALLOWED_LOWERCASE_PREFIXES = {
 # ==============================================================================
 
 COMPANY_LEGAL_TERMS = {
-    'gmbh',
-    'ug',
-    'ag',
-    'kg',
-    'ohg',
-    'gbr',
-    'gmbh & co. kg',
-    'e.k.',
-    'e.kfr.',
-    'e.v.',
-    'ltd',
-    'limited',
-    'holding',
-    'gesellschaft',
-    'haftungsbeschränkt',
-    'eingetragener kaufmann',
-    'eingetragene kauffrau',
-    'genossenschaft',
-    'verwaltung',
-    'mbh'
+    'gmbh', 'ug', 'ag', 'kg', 'ohg', 'gbr', 'gmbh & co. kg', 'e.k.', 'e.kfr.',
+    'e.v.', 'ltd', 'limited', 'holding', 'gesellschaft', 'haftungsbeschränkt',
+    'eingetragener kaufmann', 'eingetragene kauffrau', 'genossenschaft', 'verwaltung', 'mbh'
 }
 
 LEGAL_TERMS_SORTED = sorted(
@@ -435,7 +348,7 @@ def normalize_candidate_url(url):
 
 
 # ==============================================================================
-# SEARCH RESULT SCORING & CANDIDATE COLLECTION
+# SEARCH RESULT SCORING & CANDIDATE COLLECTION (VERBESSERT)
 # ==============================================================================
 
 def score_search_candidate(query, url, title="", snippet=""):
@@ -443,8 +356,10 @@ def score_search_candidate(query, url, title="", snippet=""):
         return {"score": -999, "accepted": False, "reason": "Keine URL"}
 
     clean_url = normalize_candidate_url(url)
+
+    # STRIKTER FILTER: Sofortige Ablehnung von Portalen VOR der Score-Berechnung
     if not clean_url or is_portal_url(clean_url):
-        return {"score": -999, "accepted": False, "reason": "Portal/Ungültig"}
+        return {"score": -999, "accepted": False, "reason": "Portal-/Verzeichnis-Domain"}
 
     domain_name = extract_domain_name(clean_url)
     title = title or ""
@@ -454,14 +369,19 @@ def score_search_candidate(query, url, title="", snippet=""):
     title_match = calculate_match_score(query, title)
     snippet_match = calculate_match_score(query, snippet)
 
-    score = (domain_match * 0.40) + (title_match * 0.40) + (snippet_match * 0.20)
+    score = 0
+    score += domain_match * 0.40
+    score += title_match * 0.40
+    score += snippet_match * 0.20
 
     if normalize_company_string(query) and normalize_company_string(query) in normalize_company_string(title):
         score += 15
+
     if query.lower() in snippet.lower():
         score += 10
 
     score += legal_term_score(title) * 0.5
+
     path = urlparse(clean_url).path.strip('/').lower()
 
     if not path:
@@ -473,16 +393,19 @@ def score_search_candidate(query, url, title="", snippet=""):
         score += 20
 
     final_score = min(int(score), 100)
-    confidence = "hoch" if final_score >= 75 else ("mittel" if final_score >= 55 else "niedrig")
 
     return {
         "score": final_score,
         "accepted": final_score >= 35,
-        "confidence": confidence,
+        "confidence": "hoch" if final_score >= 75 else ("mittel" if final_score >= 55 else "niedrig"),
         "url": clean_url,
         "domain_name": domain_name,
+        "domain_match": int(domain_match),
+        "title_match": int(title_match),
+        "snippet_match": int(snippet_match),
         "title": title,
-        "snippet": snippet
+        "snippet": snippet,
+        "reason": "Suchresultat bewertet"
     }
 
 
@@ -945,9 +868,19 @@ def extract_phone_candidates(page_html, soup, page_url, page_type):
 
 
 def clean_company_name(name):
-    if not name: return None
+    if not name:
+        return None
     name = re.sub(r'\s+', ' ', str(name)).strip().strip(' |:-–—,.;')
-    if not name or len(name) > 120 or name.lower() in GENERIC_TITLES_STOPWORDS:
+    if not name or len(name) > 120:
+        return None
+
+    # Filtert Domain-Adressen (z. B. intech-world.com) als Firmennamen aus
+    if re.search(r'\.(?:de|com|net|org|eu|info|biz|at|ch|co|group|io|app)\b', name, re.IGNORECASE):
+        return None
+    if name.lower().startswith(('http://', 'https://', 'www.')):
+        return None
+
+    if name.lower() in GENERIC_TITLES_STOPWORDS:
         return None
     return name
 
@@ -1373,10 +1306,27 @@ st.set_page_config(page_title="GYameli's Pro Scraper V3", page_icon="🚀", layo
 st.title("🚀 GYameli's Pro Scraper V3")
 st.caption("Website-Matching + Firmenidentifikation + Kontakt-Daten-Extraktion")
 
+# SIDEBAR / EINSTELLUNGEN
 st.sidebar.header("⚙️ Einstellungen")
-serper_key = st.sidebar.text_input("Serper API Key", type="password", help="Optional für Google-Suche & E-Mail-Fallback.")
-debug_mode = st.sidebar.checkbox("🔍 Debug-Modus", help="Zeigt Suchkandidaten, Scores, Fehler und Quellen.")
 
+serper_key = st.sidebar.text_input(
+    "Serper API Key",
+    type="password",
+    help="Optional: Wird für die Google-Suche und den E-Mail-Fallback verwendet."
+)
+
+if serper_key.strip():
+    st.sidebar.success("✅ Serper API aktiv")
+
+debug_mode = st.sidebar.checkbox(
+    "🔍 Debug-Modus",
+    help="Zeigt Suchkandidaten, Matching-Entscheidungen, Scores, Fehler und Datenquellen."
+)
+
+def clear_text_input():
+    st.session_state["lead_input_field"] = ""
+
+# SESSION STATE
 if "state" not in st.session_state: st.session_state.state = "idle"
 if "results" not in st.session_state: st.session_state.results = []
 if "queue" not in st.session_state: st.session_state.queue = []
@@ -1385,11 +1335,13 @@ if "total_count" not in st.session_state: st.session_state.total_count = 0
 if "start_time" not in st.session_state: st.session_state.start_time = None
 
 input_text = st.text_area(
-    "Leads eingeben (URLs oder Firmennamen, 1 pro Zeile)", height=200,
-    placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin"
+    "Leads eingeben (URLs oder Firmennamen, 1 pro Zeile)",
+    height=200,
+    placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin",
+    key="lead_input_field"
 )
 
-col1, col2, col3 = st.columns([1, 1, 2])
+col1, col2, col3, col4 = st.columns([1, 1, 1.5, 1.5])
 
 with col1:
     if st.button("🚀 Neu Starten", type="primary"):
@@ -1416,6 +1368,9 @@ with col2:
             st.rerun()
 
 with col3:
+    st.button("✏️ Eingabe löschen", on_click=clear_text_input)
+
+with col4:
     if st.button("🗑️ Ergebnisse löschen"):
         st.session_state.results = []
         st.session_state.queue = []
