@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (UM ZOLL-, EXPORT- & KATALOGPORTALE ERWEITERT)
+# PORTAL- UND FILTER-DOMAINEN (EXPORTE, VERZEICHNISSE, REGISTER)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -312,9 +312,6 @@ def calculate_match_score(query, target_text):
     q_tokens = set(q_clean.split())
     t_tokens = set(t_clean.split())
     
-    if not q_tokens.intersection(t_tokens):
-        return 0
-
     fuzzy = difflib.SequenceMatcher(None, q_clean, t_clean).ratio() * 100
     token_score = token_overlap_score(query, target_text)
     combined = (fuzzy * 0.55 + token_score * 0.45)
@@ -352,7 +349,6 @@ def is_portal_url(url):
         if (hostname == portal_clean or hostname.endswith('.' + portal_clean) or portal_clean in hostname):
             return True
 
-    # Heuristische Prüfung auf Verzeichnisschlüsselwörter
     for kw in PORTAL_KEYWORDS:
         if kw in hostname or kw in url_lower:
             return True
@@ -976,7 +972,7 @@ def extract_company_candidates(soup, page_type):
             if 3 <= len(p_clean) <= 80:
                 candidates.append({"value": p_clean, "score": 60, "source": "title_tag", "page": page_type})
 
-    # 4. NEU: Direkte Extraktion rechtlicher Firmennamen aus dem Fließtext/DOM (z. B. "Germany BoBoQ GmbH")
+    # 4. Direkte Extraktion rechtlicher Firmennamen aus dem Fließtext/DOM (z. B. "Germany BoBoQ GmbH")
     text = soup.get_text(separator="\n")
     pattern = r'([A-ZÄÖÜa-zäöüß0-9\&\.\-\s]{2,60}?\s+(?:GmbH\s+\&\s+Co\.\s+KG|GmbH\s+\&\s+Co\s+KG|Gesellschaft\s+mit\s+beschränkter\s+Haftung|GmbH|AG|KG|UG\b|e\.K\.|Limited|Ltd|e\.V\.|OHG|GbR|mbH\b))'
     
@@ -1474,12 +1470,6 @@ serper_key = st.sidebar.text_input(
 if serper_key.strip():
     st.sidebar.success("✅ Serper API aktiv")
 
-filter_success_only = st.sidebar.checkbox(
-    "🎯 Nur erfolgreiche Ergebnisse anzeigen/exportieren",
-    value=False,
-    help="Filtert die Tabelle und den Export auf Leads mit erfolgreicher Zuordnung."
-)
-
 debug_mode = st.sidebar.checkbox(
     "🔍 Debug-Modus",
     help="Zeigt Suchkandidaten, Matching-Entscheidungen, Scores, Fehler und Datenquellen."
@@ -1601,15 +1591,28 @@ if st.session_state.results:
     df_raw = pd.DataFrame(st.session_state.results)
     export_cols = [c for c in df_raw.columns if not c.startswith("_")]
     
-    if filter_success_only:
-        df_filtered = df_raw[df_raw["Status"].str.startswith(("✅", "🟢"), na=False)]
+    st.subheader(f"📋 Ergebnisse ({len(df_raw)} Leads gesamt)")
+    
+    # Interaktiver Filter für qualifizierte Leads
+    filter_qualified = st.checkbox(
+        "🎯 Filter aktivieren: Nur qualifizierte Leads anzeigen/exportieren (E-Mail Pflicht + Firmenname ODER Telefonnummer)",
+        value=False,
+        key="filter_qualified_leads_toggle"
+    )
+    
+    if filter_qualified:
+        has_email = df_raw["E-Mail-Adresse"].str.strip().ne("-") & df_raw["E-Mail-Adresse"].str.strip().ne("")
+        has_company = df_raw["Unternehmensname"].str.strip().ne("-") & df_raw["Unternehmensname"].str.strip().ne("")
+        has_phone = df_raw["Telefonnummer"].str.strip().ne("-") & df_raw["Telefonnummer"].str.strip().ne("")
+        
+        df_filtered = df_raw[has_email & (has_company | has_phone)]
     else:
         df_filtered = df_raw
 
     df_display = df_filtered[export_cols].copy()
     df_display.index = range(1, len(df_display) + 1)
 
-    st.subheader(f"📋 Ergebnisse ({len(df_display)} von {len(df_raw)} Leads angezeigt)")
+    st.markdown(f"**Angezeigt:** {len(df_display)} von {len(df_raw)} Leads")
     st.dataframe(df_display, use_container_width=True, height=500)
 
     col_dl1, col_dl2 = st.columns([1, 1])
@@ -1618,7 +1621,8 @@ if st.session_state.results:
         csv_data = df_display.to_csv(index=False, sep=";", encoding="utf-8-sig")
         st.download_button(
             "📊 Für Google Sheets herunterladen", data=csv_data,
-            file_name="GYameli_V3.csv", mime="text/csv", use_container_width=True
+            file_name="GYameli_V3_Qualifiziert.csv" if filter_qualified else "GYameli_V3_Alle.csv",
+            mime="text/csv", use_container_width=True
         )
 
     with col_dl2:
@@ -1628,7 +1632,7 @@ if st.session_state.results:
         output_excel.seek(0)
         st.download_button(
             "📥 Als Excel herunterladen", data=output_excel.getvalue(),
-            file_name="GYameli_V3.xlsx",
+            file_name="GYameli_V3_Qualifiziert.xlsx" if filter_qualified else "GYameli_V3_Alle.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
