@@ -209,18 +209,16 @@ def split_first_last_name(owner_str):
         return " ".join(parts[:-1]), parts[-1]
     return "Unknown", "Unknown"
 
-# --- SMART ROUTING: DIREKT-URL vs. SERPER.DEV vs. DUCKDUCKGO ---
+# --- SMART ROUTING & SUCHE ---
 
 def find_website_from_name(query, serper_key=""):
     query = query.strip()
     
-    # 1. DIREKT-URL (0.0s Ladezeit, Kostenlos)
     if "." in query and " " not in query:
         if not query.startswith('http'):
             return "https://" + query
         return query
         
-    # 2. SERPER.DEV API (High-Speed Google-Suche)
     if serper_key:
         try:
             headers = {
@@ -239,7 +237,6 @@ def find_website_from_name(query, serper_key=""):
         except Exception:
             pass
 
-    # 3. DUCKDUCKGO FALLBACK
     time.sleep(0.2)
     try:
         with DDGS() as ddgs:
@@ -294,7 +291,13 @@ def scrape_company(original_input, serper_key=""):
                 title_text = title_tag.text.split('|')[0].split('-')[0].strip()
                 if title_text: company_name = title_text
 
-            keywords = ['impressum', 'kontakt', 'contact', 'imprint', 'about', 'uber-uns', 'team', 'legal']
+            # Deutsch & Englisch Keywords für internationale Seiten
+            keywords = [
+                'impressum', 'kontakt', 'contact', 'contact-us', 'imprint', 
+                'about', 'about-us', 'uber-uns', 'ueber-uns', 'team', 'legal', 
+                'legal-notice', 'datenschutz', 'privacy', 'privacy-policy', 
+                'corporate', 'management', 'leadership', 'company'
+            ]
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag.get('href', '').lower()
                 text = a_tag.get_text().lower()
@@ -307,7 +310,15 @@ def scrape_company(original_input, serper_key=""):
     except Exception:
         pass
 
-    pages_to_check = [url] + candidate_links + [base_url + '/impressum', base_url + '/kontakt', base_url + '/imprint']
+    # Standard-Pfade (DE & EN)
+    pages_to_check = [url] + candidate_links + [
+        base_url + '/impressum', base_url + '/kontakt', 
+        base_url + '/contact', base_url + '/contact-us',
+        base_url + '/imprint', base_url + '/about', 
+        base_url + '/about-us', base_url + '/ueber-uns',
+        base_url + '/legal', base_url + '/privacy',
+        base_url + '/impressum.html'
+    ]
     
     seen = set()
     final_pages = []
@@ -441,6 +452,9 @@ def update_progress_ui():
         progress = done / total
         elapsed = int(time.time() - st.session_state.start_time) if st.session_state.start_time else 0
         
+        erfolg_count = sum(1 for r in st.session_state.results if r.get('Status') == '✅ Erfolg')
+        success_rate = int((erfolg_count / done) * 100) if done > 0 else 0
+        
         if done > 0:
             avg_per_lead = elapsed / done
             remaining_leads = total - done
@@ -454,14 +468,15 @@ def update_progress_ui():
             st.progress(progress)
             if st.session_state.state == "running":
                 st.markdown(
-                    f"⏱️ **Verstrichene Zeit:** {elapsed}s | "
-                    f"⏳ **Geschätzte Restzeit:** {eta_str} | "
-                    f"📊 **Fortschritt:** {done} von {total} Leads ({int(progress * 100)}%)"
+                    f"⏱️ **Zeit:** {elapsed}s | "
+                    f"⏳ **Restzeit:** {eta_str} | "
+                    f"📊 **Fortschritt:** {done}/{total} Leads ({int(progress * 100)}%) | "
+                    f"🎯 **Erfolgsquote:** {erfolg_count}/{done} ({success_rate}%)"
                 )
             elif st.session_state.state == "paused":
                 st.warning(
-                    f"⏸️ **Pausiert nach {elapsed}s:** {done} von {total} Leads verarbeitet ({int(progress * 100)}%). "
-                    f"Klicke auf '▶️ Fortsetzen', um weiterzumachen."
+                    f"⏸️ **Pausiert nach {elapsed}s:** {done}/{total} Leads verarbeitet. "
+                    f"🎯 **Erfolgsquote:** {erfolg_count}/{done} ({success_rate}%)."
                 )
 
 if st.session_state.state in ["running", "paused"] or st.session_state.completed_count > 0:
@@ -486,7 +501,9 @@ if st.session_state.state == "running" and st.session_state.queue:
             
     if not st.session_state.queue:
         st.session_state.state = "idle"
-        st.success(f"✅ Scraping vollständig beendet! {st.session_state.completed_count} Leads in {int(time.time() - st.session_state.start_time)}s verarbeitet.")
+        erfolg_final = sum(1 for r in st.session_state.results if r.get('Status') == '✅ Erfolg')
+        rate_final = int((erfolg_final / st.session_state.completed_count) * 100) if st.session_state.completed_count > 0 else 0
+        st.success(f"✅ Scraping vollständig beendet! {st.session_state.completed_count} Leads in {int(time.time() - st.session_state.start_time)}s verarbeitet. 🎯 Finale Erfolgsquote: {erfolg_final}/{st.session_state.completed_count} ({rate_final}%).")
     
     st.rerun()
 
