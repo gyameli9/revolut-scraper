@@ -348,7 +348,7 @@ def normalize_candidate_url(url):
 
 
 # ==============================================================================
-# SEARCH RESULT SCORING & CANDIDATE COLLECTION (VERBESSERT)
+# SEARCH RESULT SCORING & CANDIDATE COLLECTION
 # ==============================================================================
 
 def score_search_candidate(query, url, title="", snippet=""):
@@ -357,7 +357,6 @@ def score_search_candidate(query, url, title="", snippet=""):
 
     clean_url = normalize_candidate_url(url)
 
-    # STRIKTER FILTER: Sofortige Ablehnung von Portalen VOR der Score-Berechnung
     if not clean_url or is_portal_url(clean_url):
         return {"score": -999, "accepted": False, "reason": "Portal-/Verzeichnis-Domain"}
 
@@ -853,10 +852,17 @@ def extract_phone_candidates(page_html, soup, page_url, page_type):
     for m in matches: raw_phones.append((m, "regex_body"))
 
     for raw_p, src in raw_phones:
-        cleaned = re.sub(r'[^\d+]', '', raw_p)
+        # 1. (0) Rumpfvorwahl bei internationalen Nummern korrigieren
+        clean_p = re.sub(r'(\+\d{2,3})\s*\(0\)', r'\1 ', raw_p)
+        clean_p = re.sub(r'\(0\)', '', clean_p)
+
+        cleaned = re.sub(r'[^\d+]', '', clean_p)
         if cleaned.startswith('0049'): cleaned = '+49' + cleaned[4:]
         elif cleaned.startswith('0') and not cleaned.startswith('00'): cleaned = '+49' + cleaned[1:]
         elif cleaned.startswith('49') and not cleaned.startswith('+'): cleaned = '+' + cleaned
+
+        if cleaned.count('+') > 1:
+            cleaned = '+' + re.sub(r'\+', '', cleaned)
 
         digits_only = re.sub(r'\D', '', cleaned)
         if not (8 <= len(digits_only) <= 15) or 'fax' in raw_p.lower(): continue
@@ -961,28 +967,45 @@ def extract_person_candidates(soup, page_type):
         if role_match:
             matched_role = role_match.group(0).lower()
             role_score = ROLE_SCORES.get(matched_role, 50)
-            potential_name = ROLE_REGEX.sub("", line_clean)
-            potential_name = re.sub(r"[:\-,–|]", " ", potential_name).strip()
-            cleaned_name = clean_person_name_string(potential_name)
-            if cleaned_name:
-                candidates.append({"value": cleaned_name, "role": matched_role, "score": role_score + page_bonus, "source": f"dom_{page_type}"})
+            potential_names_str = ROLE_REGEX.sub("", line_clean).strip(" :")
+            
+            # Mehrere Namen in einer Zeile trennen (z. B. "Michael Winter, Christian Alt")
+            raw_sub_names = re.split(r'\b(?:und|sowie|&|;)\b|[,/|\n]', potential_names_str, flags=re.IGNORECASE)
+            for sub_name in raw_sub_names:
+                cleaned_name = clean_person_name_string(sub_name)
+                if cleaned_name:
+                    candidates.append({"value": cleaned_name, "role": matched_role, "score": role_score + page_bonus, "source": f"dom_{page_type}"})
     return candidates
 
 
 # ==============================================================================
-# MATCHING & CANDIDATE SELECTION
+# MATCHING & CANDIDATE SELECTION (TYPISIERUNG BEHOBEN)
 # ==============================================================================
 
-def select_best_candidate(candidates, is_person=False):
+def select_best_candidate(candidates, candidate_type="company"):
     if not candidates: return None
     grouped = {}
     for candidate in candidates:
-        value = candidate.get("value", "")
-        value = strip_honorifics(value) if is_person else clean_company_name(value)
-        if not value: continue
-        key = re.sub(r"\s+", " ", value.lower()).strip()
+        raw_val = candidate.get("value", "")
+        if not raw_val: continue
+
+        if candidate_type == "person":
+            val = strip_honorifics(raw_val)
+            val = clean_person_name_string(val)
+        elif candidate_type == "company":
+            val = clean_company_name(raw_val)
+        elif candidate_type == "email":
+            val = raw_val.lower().strip().strip(".,:;()")
+        elif candidate_type == "phone":
+            val = raw_val.strip()
+        else:
+            val = raw_val.strip()
+
+        if not val: continue
+
+        key = re.sub(r"\s+", " ", val.lower()).strip()
         if key not in grouped:
-            grouped[key] = {"value": value, "score": 0, "count": 0, "roles": set(), "sources": set(), "pages": set()}
+            grouped[key] = {"value": val, "score": 0, "count": 0, "roles": set(), "sources": set(), "pages": set()}
         item = grouped[key]
         item["count"] += 1
         item["score"] = max(item["score"], float(candidate.get("score", 0)))
@@ -995,7 +1018,7 @@ def select_best_candidate(candidates, is_person=False):
         item["final_score"] = item["score"] + min((item["count"] - 1) * 5, 20) + min(max(len(item["sources"]) - 1, 0) * 4, 12)
 
     best = max(grouped.values(), key=lambda x: x["final_score"])
-    if is_person and best["final_score"] < 70: return None
+    if candidate_type == "person" and best["final_score"] < 70: return None
     return {
         "value": best["value"], "score": round(best["score"], 2), "final_score": round(best["final_score"], 2),
         "count": best["count"], "sources": sorted(best["sources"]), "pages": sorted(best["pages"]), "roles": sorted(best["roles"])
@@ -1258,10 +1281,10 @@ def scrape_single_lead_v3(input_lead, serper_key="", debug_mode=False):
         g_em, _ = search_email_in_google_index(domain, input_lead, serper_key)
         if g_em != "-": all_emails.append({"value": g_em, "score": 40, "source": "serper_google_index", "page": "search"})
 
-    best_email = select_best_candidate(all_emails)
-    best_phone = select_best_candidate(all_phones)
+    best_email = select_best_candidate(all_emails, candidate_type="email")
+    best_phone = select_best_candidate(all_phones, candidate_type="phone")
     best_company = select_best_company_for_query(input_lead, all_companies)
-    best_person = select_best_candidate(all_persons, is_person=True)
+    best_person = select_best_candidate(all_persons, candidate_type="person")
 
     debug_log["matching"] = build_company_matching_debug(input_lead, all_companies, best_company)
     debug_log["best_email"] = best_email
