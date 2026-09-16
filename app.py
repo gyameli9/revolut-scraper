@@ -209,14 +209,38 @@ def split_first_last_name(owner_str):
         return " ".join(parts[:-1]), parts[-1]
     return "Unknown", "Unknown"
 
-def find_website_from_name(query):
+# --- SMART ROUTING: DIREKT-URL vs. SERPER.DEV vs. DUCKDUCKGO ---
+
+def find_website_from_name(query, serper_key=""):
     query = query.strip()
+    
+    # 1. DIREKT-URL (0.0s Ladezeit, Kostenlos)
     if "." in query and " " not in query:
-        if not query.startswith('http'): return "https://" + query
+        if not query.startswith('http'):
+            return "https://" + query
         return query
         
+    # 2. SERPER.DEV API (High-Speed Google-Suche)
+    if serper_key:
+        try:
+            headers = {
+                'X-API-KEY': serper_key.strip(),
+                'Content-Type': 'application/json'
+            }
+            payload = {'q': f"{query} website OR impressum", 'num': 2}
+            res = requests.post('https://google.serper.dev/search', headers=headers, json=payload, timeout=2.5)
+            if res.status_code == 200:
+                data = res.json()
+                for item in data.get('organic', []):
+                    link = item.get('link', '')
+                    link_lower = link.lower()
+                    if link and not any(bad in link_lower for bad in ['linkedin.com', 'xing.com', 'wikipedia.org', 'northdata', 'gelbeseiten', 'facebook.com', 'instagram.com']):
+                        return link
+        except Exception:
+            pass
+
+    # 3. DUCKDUCKGO FALLBACK
     time.sleep(0.2)
-    
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query + " website OR impressum", max_results=2))
@@ -228,8 +252,8 @@ def find_website_from_name(query):
         pass
     return None
 
-def scrape_company(original_input):
-    url = find_website_from_name(original_input)
+def scrape_company(original_input, serper_key=""):
+    url = find_website_from_name(original_input, serper_key)
     if not url:
         return {
             "Vorname": "Unknown",
@@ -255,7 +279,6 @@ def scrape_company(original_input):
     soups = []
     candidate_links = []
     
-    # 1. Hauptseite abrufen (Timeout 2.5s gegen Bot-Hänger)
     try:
         res = requests.get(url, headers=headers, timeout=2.5, allow_redirects=True)
         current_url = res.url
@@ -271,7 +294,6 @@ def scrape_company(original_input):
                 title_text = title_tag.text.split('|')[0].split('-')[0].strip()
                 if title_text: company_name = title_text
 
-            # Relevanteste Links für Unterseiten sammeln
             keywords = ['impressum', 'kontakt', 'contact', 'imprint', 'about', 'uber-uns', 'team', 'legal']
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag.get('href', '').lower()
@@ -280,22 +302,20 @@ def scrape_company(original_input):
                     full_link = urljoin(current_url, a_tag['href'])
                     if full_link not in candidate_links:
                         candidate_links.append(full_link)
-                        if len(candidate_links) >= 4: # Max 4 Unterseiten-Links von Hauptseite übernehmen
+                        if len(candidate_links) >= 4:
                             break
     except Exception:
         pass
 
-    # 2. Pfade zusammenführen und auf MAXIMAL 5 SEITEN begrenzen
     pages_to_check = [url] + candidate_links + [base_url + '/impressum', base_url + '/kontakt', base_url + '/imprint']
     
     seen = set()
     final_pages = []
     for p in pages_to_check:
-        if p not in seen and len(final_pages) < 5: # Limit auf 5 Unterseiten!
+        if p not in seen and len(final_pages) < 5:
             seen.add(p)
             final_pages.append(p)
 
-    # 3. Unterseiten mit Early-Exit abarbeiten
     for page in final_pages[1:]:
         combined_temp = "\n".join(html_texts)
         temp_soup = soups[0] if soups else None
@@ -304,7 +324,6 @@ def scrape_company(original_input):
         curr_phone = extract_phone_advanced(temp_soup, combined_temp)
         curr_owner = extract_owner_advanced(temp_soup, combined_temp)
         
-        # Früher Abbruch, sobald E-Mail, Tel & Name vollständig sind
         if curr_emails != "-" and curr_phone != "-" and curr_owner != "Unknown":
             break
             
@@ -342,12 +361,20 @@ def scrape_company(original_input):
         "Eingabe": original_input
     }
 
-# --- 2. USER INTERFACE (STATE & BUTTONS) ---
+# --- 2. USER INTERFACE & SIDEBAR ---
 
 st.set_page_config(page_title="GYameli's Pro Scraper", page_icon="🚀", layout="wide")
 
 st.title("🚀 GYameli's Pro Scraper")
 st.markdown("Füge deine Unternehmensnamen oder URLs ein (z. B. direkt aus **Spalte A einer Excel-Tabelle**).")
+
+st.sidebar.header("⚡ Serper.dev API (Optional)")
+serper_key = st.sidebar.text_input("Serper API Key", type="password", help="Bypass für DuckDuckGo: Liefert 90%+ Genauigkeit via Google.")
+
+if serper_key:
+    st.sidebar.success("🔥 Google Search (Serper) aktiv!")
+else:
+    st.sidebar.info("💡 Tipp: Wenn du Domains (z.B. zalando.de) eingibst, benötigst du keinen API-Key.")
 
 if "state" not in st.session_state:
     st.session_state.state = "idle"
@@ -405,8 +432,6 @@ with col2:
 with col3:
     st.button("🗑️ Eingabe löschen", on_click=clear_input_box)
 
-# --- LIVE FORTSCHRITTSANZEIGE & ECHTZEIT-TIMER ---
-
 progress_box = st.empty()
 
 def update_progress_ui():
@@ -442,15 +467,16 @@ def update_progress_ui():
 if st.session_state.state in ["running", "paused"] or st.session_state.completed_count > 0:
     update_progress_ui()
 
-# --- BATCH PROCESSOR MIT LIVE-STREAMING ---
-
 if st.session_state.state == "running" and st.session_state.queue:
     batch_size = 5
     current_batch = st.session_state.queue[:batch_size]
     st.session_state.queue = st.session_state.queue[batch_size:]
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_input = {executor.submit(scrape_company, line): line for line in current_batch}
+        future_to_input = {
+            executor.submit(scrape_company, line, serper_key): line 
+            for line in current_batch
+        }
         for future in concurrent.futures.as_completed(future_to_input):
             st.session_state.results.append(future.result())
             st.session_state.completed_count += 1
@@ -463,8 +489,6 @@ if st.session_state.state == "running" and st.session_state.queue:
         st.success(f"✅ Scraping vollständig beendet! {st.session_state.completed_count} Leads in {int(time.time() - st.session_state.start_time)}s verarbeitet.")
     
     st.rerun()
-
-# --- ERGEBNIS-TABELLE & EXPORT ---
 
 if st.session_state.results:
     df_raw = pd.DataFrame(st.session_state.results)
