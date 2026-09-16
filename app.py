@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (UM B2B-VERZEICHNISSE ERWEITERT)
+# PORTAL- UND FILTER-DOMAINEN (UM B2B- & REGISTER-VERZEICHNISSE ERWEITERT)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -65,7 +65,7 @@ PORTAL_DOMAINS = [
     'online-handelsregister.de', 'firmenwissen.de', 'dastelefonbuch.de',
     'enfsolar.com', 'ceginformacio.hu', 'haus-garten-freizeit.de', 'metro.it',
     'tracxn.com', 'deutsche-exportdatenbank.de', 'rocketreach.co', 'bloomberg.com',
-    'keytobavaria.com'
+    'keytobavaria.com', 'service.gov.uk', 'foerderdatenbank.de', 'plant-my-tree.de'
 ]
 
 AGENCY_KEYWORDS = [
@@ -296,7 +296,7 @@ def calculate_match_score(query, target_text):
     t_clean = normalize_company_string(target_text)
     if not q_clean or not t_clean:
         return 0
-    if q_clean == t_clean:
+    if q_clean == t_clean or q_clean.replace(" ", "") == t_clean.replace(" ", ""):
         return 100
     fuzzy = difflib.SequenceMatcher(None, q_clean, t_clean).ratio() * 100
     token_score = token_overlap_score(query, target_text)
@@ -907,6 +907,16 @@ def clean_company_name(name):
     return name
 
 
+def clean_title_suffixes(name):
+    if not name: return ""
+    # Entfernt Seitentitel-Anhänge wie "- Kontakt", "- Impressum", ": Startseite"
+    cleaned = re.split(
+        r'\s*[|:–—\-]\s*(?:Kontakt|Impressum|Home|Startseite|About|Über uns|Datenschutz|Privacy|Contact|Official Site|GARAGE EQUIPMENT|Liefergroßhandel.*|Overview.*|Employee.*|Online Shop|Shop)\b',
+        str(name), flags=re.IGNORECASE
+    )[0].strip(" -|:–—,.;")
+    return cleaned
+
+
 def extract_company_candidates(soup, page_type):
     candidates = []
     if not soup: return candidates
@@ -1053,26 +1063,49 @@ def extract_company_legal_terms(name):
 def score_company_identity(query, candidate_name):
     if not query or not candidate_name:
         return {"score": 0, "exact": False, "reason": "missing_value"}
+
+    clean_cand = clean_title_suffixes(candidate_name)
     query_norm = normalize_company_string(query)
-    candidate_norm = normalize_company_string(candidate_name)
+    candidate_norm = normalize_company_string(clean_cand)
+
     if not query_norm or not candidate_norm:
         return {"score": 0, "exact": False, "reason": "empty_normalized_value"}
 
+    # Exakter Match inkl. Prüfung auf Zusammenschreibung (z. B. Mercur Handel vs mercurhandel)
+    if query_norm == candidate_norm or query_norm.replace(" ", "") == candidate_norm.replace(" ", ""):
+        return {
+            "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
+            "query_normalized": query_norm, "candidate_normalized": candidate_norm,
+            "query_legal_terms": sorted(extract_company_legal_terms(query)),
+            "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
+        }
+
+    q_tokens = set(query_norm.split())
+    c_tokens = set(candidate_norm.split())
+
+    # 100 % Wort-Übereinstimmung unabhängig von der Wortreihenfolge
+    if q_tokens and c_tokens and q_tokens == c_tokens:
+        return {
+            "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
+            "query_normalized": query_norm, "candidate_normalized": candidate_norm,
+            "query_legal_terms": sorted(extract_company_legal_terms(query)),
+            "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
+        }
+
     similarity = difflib.SequenceMatcher(None, query_norm, candidate_norm).ratio()
     score = similarity * 70
-    if query_norm == candidate_norm: score += 30
 
-    query_tokens = set(re.findall(r"[a-z0-9äöüß]+", str(query).lower())) - {normalize_company_string(t) for t in COMPANY_LEGAL_TERMS}
-    candidate_tokens = set(re.findall(r"[a-z0-9äöüß]+", str(candidate_name).lower())) - {normalize_company_string(t) for t in COMPANY_LEGAL_TERMS}
-
-    if query_tokens and candidate_tokens:
-        intersection = query_tokens.intersection(candidate_tokens)
-        token_ratio = len(intersection) / max(len(query_tokens), len(candidate_tokens))
+    if q_tokens and c_tokens:
+        intersection = q_tokens.intersection(c_tokens)
+        token_ratio = len(intersection) / max(len(q_tokens), len(c_tokens))
         score += token_ratio * 25
+        if len(intersection) == len(q_tokens):
+            score += 15
 
     score = max(0, min(100, score))
-    exact = (query_norm == candidate_norm or similarity >= 0.96)
-    reason = "exact_or_near_exact" if exact else ("strong_match" if score >= 80 else "weak_match")
+    exact = (similarity >= 0.96)
+    reason = "exact_or_near_exact" if exact else ("strong_match" if score >= 75 else "weak_match")
+
     return {
         "score": round(score, 2), "exact": exact, "reason": reason, "similarity": round(similarity * 100, 2),
         "query_normalized": query_norm, "candidate_normalized": candidate_norm,
@@ -1105,7 +1138,7 @@ def select_best_company_for_query(query, candidates):
         return None
     best = ranked[0]
     return {
-        "value": best["value"], "score": best.get("score", 0), "identity_score": best["identity_score"],
+        "value": clean_title_suffixes(best["value"]), "score": best.get("score", 0), "identity_score": best["identity_score"],
         "combined_score": best["combined_score"], "identity_reason": best["identity_reason"],
         "identity_similarity": best["identity_similarity"], "source": best.get("source"),
         "page": best.get("page"), "ranked_candidates": ranked[:8]
@@ -1118,12 +1151,11 @@ def determine_match_status(resolved_info, company_match, has_email, has_phone, h
     if resolved_info and resolved_info.get("rejected"):
         return "⚠️ Unsicherer Treffer"
 
-    # BEHOBEN: Bei Direkt-URL wird die Firmeneingabe automatisch als valider Kontext übernommen
     has_company = (company_match is not None) or is_direct
 
     if company_match:
         company_score = company_match.get("combined_score", 0)
-        if company_score < 65 and not is_direct:
+        if company_score < 60 and not is_direct:
             return "⚠️ Unsicherer Treffer"
     elif not is_direct:
         if not has_email and not has_phone and not has_person:
