@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (ERWEITERT)
+# PORTAL- UND FILTER-DOMAINEN
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -348,7 +348,7 @@ def normalize_candidate_url(url):
 
 
 # ==============================================================================
-# SEARCH RESULT SCORING & CANDIDATE COLLECTION
+# SEARCH RESULT SCORING & CANDIDATE COLLECTION (FLEXIBLE SUCHEN)
 # ==============================================================================
 
 def score_search_candidate(query, url, title="", snippet=""):
@@ -432,7 +432,9 @@ def get_search_candidates_serper(query, serper_key, debug_log=None):
         return candidates
     try:
         headers = {'X-API-KEY': serper_key.strip(), 'Content-Type': 'application/json'}
-        payload = {'q': f'"{query}" offizielle Website', 'num': 10}
+        # WICHTIG: Keine starren Anführungszeichen um den Suchbegriff!
+        search_query = query.replace('"', '').strip()
+        payload = {'q': f'{search_query} offizielle Website Impressum', 'num': 10}
         response = c_requests.post('https://google.serper.dev/search', headers=headers, json=payload, timeout=8.0)
         if response.status_code == 200:
             data = response.json()
@@ -459,7 +461,8 @@ def get_search_candidates_duckduckgo(query, debug_log=None):
         with DDG_LOCK:
             time.sleep(0.8)
             with DDGS() as ddgs:
-                results = ddgs.text(f'"{query}" offizielle Website Impressum', max_results=10)
+                search_query = query.replace('"', '').strip()
+                results = ddgs.text(f'{search_query} offizielle Website Impressum', max_results=10)
                 for position, item in enumerate(results, start=1):
                     link = item.get("href", "")
                     title = item.get("title", "")
@@ -477,10 +480,24 @@ def get_search_candidates_duckduckgo(query, debug_log=None):
 
 def collect_search_candidates(query, serper_key="", debug_log=None):
     candidates = []
-    if serper_key:
-        candidates.extend(get_search_candidates_serper(query, serper_key, debug_log))
-    if len(candidates) < 3:
-        candidates.extend(get_search_candidates_duckduckgo(query, debug_log))
+    queries_to_try = [query]
+
+    # Umlaut-Fallback generieren (z. B. "junglück" -> "junglueck")
+    umlaut_variant = (
+        query.replace('ä', 'ae').replace('ö', 'oe').replace('ü', 'ue')
+             .replace('Ä', 'Ae').replace('Ö', 'Oe').replace('Ü', 'Ue')
+    )
+    if umlaut_variant != query:
+        queries_to_try.append(umlaut_variant)
+
+    for q in queries_to_try:
+        if serper_key:
+            candidates.extend(get_search_candidates_serper(q, serper_key, debug_log))
+        if len(candidates) < 3:
+            candidates.extend(get_search_candidates_duckduckgo(q, debug_log))
+        if candidates:
+            break
+
     candidates = deduplicate_search_candidates(candidates)
     candidates.sort(key=lambda x: x.get("score", -999), reverse=True)
     candidates = candidates[:6]
@@ -852,7 +869,7 @@ def extract_phone_candidates(page_html, soup, page_url, page_type):
     for m in matches: raw_phones.append((m, "regex_body"))
 
     for raw_p, src in raw_phones:
-        # 1. (0) Rumpfvorwahl bei internationalen Nummern korrigieren
+        # Korrektur der Rumpfvorwahl (+49 (0) ...) -> entfent die einklammerte Null
         clean_p = re.sub(r'(\+\d{2,3})\s*\(0\)', r'\1 ', raw_p)
         clean_p = re.sub(r'\(0\)', '', clean_p)
 
@@ -968,8 +985,8 @@ def extract_person_candidates(soup, page_type):
             matched_role = role_match.group(0).lower()
             role_score = ROLE_SCORES.get(matched_role, 50)
             potential_names_str = ROLE_REGEX.sub("", line_clean).strip(" :")
-            
-            # Mehrere Namen in einer Zeile trennen (z. B. "Michael Winter, Christian Alt")
+
+            # Namensaufteilung bei mehreren Personen ("Michael Winter, Christian Alt")
             raw_sub_names = re.split(r'\b(?:und|sowie|&|;)\b|[,/|\n]', potential_names_str, flags=re.IGNORECASE)
             for sub_name in raw_sub_names:
                 cleaned_name = clean_person_name_string(sub_name)
@@ -979,7 +996,7 @@ def extract_person_candidates(soup, page_type):
 
 
 # ==============================================================================
-# MATCHING & CANDIDATE SELECTION (TYPISIERUNG BEHOBEN)
+# MATCHING & CANDIDATE SELECTION
 # ==============================================================================
 
 def select_best_candidate(candidates, candidate_type="company"):
@@ -989,6 +1006,7 @@ def select_best_candidate(candidates, candidate_type="company"):
         raw_val = candidate.get("value", "")
         if not raw_val: continue
 
+        # TYP-SPEZIFISCHE BEREINIGUNG (Filterung verhindert versehentliches Löschen von E-Mails)
         if candidate_type == "person":
             val = strip_honorifics(raw_val)
             val = clean_person_name_string(val)
