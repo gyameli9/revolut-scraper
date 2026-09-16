@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (UM B2B- & REGISTER-VERZEICHNISSE ERWEITERT)
+# PORTAL- UND FILTER-DOMAINEN (ERWEITERT)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -65,7 +65,8 @@ PORTAL_DOMAINS = [
     'online-handelsregister.de', 'firmenwissen.de', 'dastelefonbuch.de',
     'enfsolar.com', 'ceginformacio.hu', 'haus-garten-freizeit.de', 'metro.it',
     'tracxn.com', 'deutsche-exportdatenbank.de', 'rocketreach.co', 'bloomberg.com',
-    'keytobavaria.com', 'service.gov.uk', 'foerderdatenbank.de', 'plant-my-tree.de'
+    'keytobavaria.com', 'service.gov.uk', 'foerderdatenbank.de', 'plant-my-tree.de',
+    'implisense.com', 'exportgenius.in', 'railmarket.com', 'kompass.com', 'kompass.de'
 ]
 
 AGENCY_KEYWORDS = [
@@ -298,6 +299,14 @@ def calculate_match_score(query, target_text):
         return 0
     if q_clean == t_clean or q_clean.replace(" ", "") == t_clean.replace(" ", ""):
         return 100
+    
+    q_tokens = set(q_clean.split())
+    t_tokens = set(t_clean.split())
+    
+    # Schutz vor Teilübereinstimmungen wie "Bosswerk" vs "Boss"
+    if not q_tokens.intersection(t_tokens):
+        return 0
+
     fuzzy = difflib.SequenceMatcher(None, q_clean, t_clean).ratio() * 100
     token_score = token_overlap_score(query, target_text)
     combined = (fuzzy * 0.55 + token_score * 0.45)
@@ -909,7 +918,6 @@ def clean_company_name(name):
 
 def clean_title_suffixes(name):
     if not name: return ""
-    # Entfernt Seitentitel-Anhänge wie "- Kontakt", "- Impressum", ": Startseite"
     cleaned = re.split(
         r'\s*[|:–—\-]\s*(?:Kontakt|Impressum|Home|Startseite|About|Über uns|Datenschutz|Privacy|Contact|Official Site|GARAGE EQUIPMENT|Liefergroßhandel.*|Overview.*|Employee.*|Online Shop|Shop)\b',
         str(name), flags=re.IGNORECASE
@@ -962,6 +970,10 @@ def strip_honorifics(name_str):
 def clean_person_name_string(raw_name):
     if not raw_name: return False
     raw_name = strip_honorifics(re.sub(r'\s+', ' ', str(raw_name)).strip())
+    
+    # KORREKTUR: Entferne führende Füllwörter wie "den", "der", "die", "als", "vertreten durch"
+    raw_name = re.sub(r'^(?:den|der|die|des|dem|als|vom|im|durch|mit|von)\s+', '', raw_name, flags=re.IGNORECASE)
+    
     raw_name = re.split(r'\s*(?:,|;|\||HRB|HRA|Tel\.?|Telefon|E-Mail|Email|geb\.?)\b', raw_name, maxsplit=1, flags=re.IGNORECASE)[0].strip(" .,:;-")
     if not raw_name or len(raw_name) > 80: return False
     words = raw_name.split()
@@ -994,6 +1006,9 @@ def extract_person_candidates(soup, page_type):
             matched_role = role_match.group(0).lower()
             role_score = ROLE_SCORES.get(matched_role, 50)
             potential_names_str = ROLE_REGEX.sub("", line_clean).strip(" :")
+
+            # Entferne Artikel/Füllwörter vor der Namensaufteilung
+            potential_names_str = re.sub(r'^(?:den|der|die|des|dem|als|vom|im|durch)\s+', '', potential_names_str, flags=re.IGNORECASE).strip(" :")
 
             raw_sub_names = re.split(r'\b(?:und|sowie|&|;)\b|[,/|\n]', potential_names_str, flags=re.IGNORECASE)
             for sub_name in raw_sub_names:
@@ -1071,7 +1086,13 @@ def score_company_identity(query, candidate_name):
     if not query_norm or not candidate_norm:
         return {"score": 0, "exact": False, "reason": "empty_normalized_value"}
 
-    # Exakter Match inkl. Prüfung auf Zusammenschreibung (z. B. Mercur Handel vs mercurhandel)
+    # Schutz vor Teilübereinstimmungen wie "Bosswerk" vs "Boss"
+    q_tokens = set(query_norm.split())
+    c_tokens = set(candidate_norm.split())
+    if not q_tokens.intersection(c_tokens):
+        return {"score": 0, "exact": False, "reason": "no_token_overlap", "similarity": 0, "query_normalized": query_norm, "candidate_normalized": candidate_norm, "query_legal_terms": [], "candidate_legal_terms": []}
+
+    # Exakter Match
     if query_norm == candidate_norm or query_norm.replace(" ", "") == candidate_norm.replace(" ", ""):
         return {
             "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
@@ -1080,11 +1101,8 @@ def score_company_identity(query, candidate_name):
             "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
         }
 
-    q_tokens = set(query_norm.split())
-    c_tokens = set(candidate_norm.split())
-
-    # 100 % Wort-Übereinstimmung unabhängig von der Wortreihenfolge
-    if q_tokens and c_tokens and q_tokens == c_tokens:
+    # 100 % Wort-Übereinstimmung unabhängig von Wortreihenfolge
+    if q_tokens == c_tokens:
         return {
             "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
             "query_normalized": query_norm, "candidate_normalized": candidate_norm,
