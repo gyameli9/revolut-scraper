@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 from duckduckgo_search import DDGS
 import io
 import time
+import gc
 
 # --- 1. FILTER & EXTRAKTIONS-LOGIK ---
 
@@ -213,13 +214,19 @@ def find_website_from_name(query):
     if "." in query and " " not in query:
         if not query.startswith('http'): return "https://" + query
         return query
+        
+    time.sleep(0.3)
+    
     try:
-        results = DDGS().text(query + " website OR impressum", max_results=2)
-        for res in results:
-            href = res['href'].lower()
-            if not any(bad in href for bad in ['linkedin.com', 'xing.com', 'wikipedia.org', 'northdata', 'gelbeseiten']):
-                return res['href']
-    except: pass
+        # Context-Manager schützt vor unendlicher I/O-Blockade bei Suchanfragen
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query + " website OR impressum", max_results=2))
+            for res in results:
+                href = res.get('href', '').lower()
+                if href and not any(bad in href for bad in ['linkedin.com', 'xing.com', 'wikipedia.org', 'northdata', 'gelbeseiten']):
+                    return res['href']
+    except Exception:
+        pass
     return None
 
 def scrape_company(original_input):
@@ -250,8 +257,7 @@ def scrape_company(original_input):
     soups = []
     
     try:
-        # Aggressiver Timeout (3 Sek.) für maximalen Speed
-        res = requests.get(url, headers=headers, timeout=3, allow_redirects=True)
+        res = requests.get(url, headers=headers, timeout=4, allow_redirects=True)
         current_url = res.url
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -278,7 +284,6 @@ def scrape_company(original_input):
     pages_to_check = list(set(pages_to_check))
     
     for page in pages_to_check:
-        # EARLY EXIT: Wenn Mail, Telefon & Inhaber bereits gefunden wurden, Abbruch!
         combined_temp = "\n".join(html_texts)
         temp_soup = soups[0] if soups else None
         
@@ -287,10 +292,10 @@ def scrape_company(original_input):
         curr_owner = extract_owner_advanced(temp_soup, combined_temp)
         
         if curr_emails != "-" and curr_phone != "-" and curr_owner != "Unknown":
-            break # Alle Daten da -> Zeit sparen!
+            break
             
         try:
-            r = requests.get(page, headers=headers, timeout=3)
+            r = requests.get(page, headers=headers, timeout=4)
             if r.status_code == 200:
                 soup_page = BeautifulSoup(r.text, 'html.parser')
                 soups.append(soup_page)
@@ -306,6 +311,10 @@ def scrape_company(original_input):
     phone = extract_phone_advanced(main_soup, combined_html)
     
     status_val = "✅ Erfolg" if emails_formatted != "-" else ("⚠️ Teilweise" if (phone != "-" or owner_raw != "Unknown") else "❌ Keine Daten")
+
+    del html_texts
+    del soups
+    del combined_html
 
     return {
         "Vorname": first_name,
@@ -394,18 +403,20 @@ if st.session_state.state in ["running", "paused"] or st.session_state.completed
     elif st.session_state.state == "paused":
         st.warning(f"⏸️ **Pausiert nach {elapsed}s:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%). Klicke auf '▶️ Fortsetzen', um weiterzumachen.")
 
-# --- BATCH PROCESSOR (TURBO: 10 LEADS PARALLEL) ---
+# --- BATCH PROCESSOR ---
 
 if st.session_state.state == "running" and st.session_state.queue:
-    batch_size = 10
+    batch_size = 5
     current_batch = st.session_state.queue[:batch_size]
     st.session_state.queue = st.session_state.queue[batch_size:]
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_to_input = {executor.submit(scrape_company, line): line for line in current_batch}
         for future in concurrent.futures.as_completed(future_to_input):
             st.session_state.results.append(future.result())
             st.session_state.completed_count += 1
+            
+    gc.collect() 
             
     if not st.session_state.queue:
         st.session_state.state = "idle"
