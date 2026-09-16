@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN
+# PORTAL- UND FILTER-DOMAINEN (UM B2B-VERZEICHNISSE ERWEITERT)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -62,7 +62,10 @@ PORTAL_DOMAINS = [
     'yelp.com', 'kununu.com', 'companyhouse.de', 'companyhouse.com', 'creditreform.de',
     'zoominfo.com', 'openpr.de', 'kimeta.de', 'worldtenders.in', 'worldplaces.me',
     'arounddeal.com', 'eximpedia.app', 'logimat-messe.de', 'handelsregister.ai',
-    'online-handelsregister.de', 'firmenwissen.de', 'dastelefonbuch.de'
+    'online-handelsregister.de', 'firmenwissen.de', 'dastelefonbuch.de',
+    'enfsolar.com', 'ceginformacio.hu', 'haus-garten-freizeit.de', 'metro.it',
+    'tracxn.com', 'deutsche-exportdatenbank.de', 'rocketreach.co', 'bloomberg.com',
+    'keytobavaria.com'
 ]
 
 AGENCY_KEYWORDS = [
@@ -348,7 +351,7 @@ def normalize_candidate_url(url):
 
 
 # ==============================================================================
-# SEARCH RESULT SCORING & CANDIDATE COLLECTION (FLEXIBLE SUCHEN)
+# SEARCH RESULT SCORING & CANDIDATE COLLECTION
 # ==============================================================================
 
 def score_search_candidate(query, url, title="", snippet=""):
@@ -432,7 +435,6 @@ def get_search_candidates_serper(query, serper_key, debug_log=None):
         return candidates
     try:
         headers = {'X-API-KEY': serper_key.strip(), 'Content-Type': 'application/json'}
-        # WICHTIG: Keine starren Anführungszeichen um den Suchbegriff!
         search_query = query.replace('"', '').strip()
         payload = {'q': f'{search_query} offizielle Website Impressum', 'num': 10}
         response = c_requests.post('https://google.serper.dev/search', headers=headers, json=payload, timeout=8.0)
@@ -482,7 +484,6 @@ def collect_search_candidates(query, serper_key="", debug_log=None):
     candidates = []
     queries_to_try = [query]
 
-    # Umlaut-Fallback generieren (z. B. "junglück" -> "junglueck")
     umlaut_variant = (
         query.replace('ä', 'ae').replace('ö', 'oe').replace('ü', 'ue')
              .replace('Ä', 'Ae').replace('Ö', 'Oe').replace('Ü', 'Ue')
@@ -869,7 +870,6 @@ def extract_phone_candidates(page_html, soup, page_url, page_type):
     for m in matches: raw_phones.append((m, "regex_body"))
 
     for raw_p, src in raw_phones:
-        # Korrektur der Rumpfvorwahl (+49 (0) ...) -> entfent die einklammerte Null
         clean_p = re.sub(r'(\+\d{2,3})\s*\(0\)', r'\1 ', raw_p)
         clean_p = re.sub(r'\(0\)', '', clean_p)
 
@@ -897,7 +897,6 @@ def clean_company_name(name):
     if not name or len(name) > 120:
         return None
 
-    # Filtert Domain-Adressen (z. B. intech-world.com) als Firmennamen aus
     if re.search(r'\.(?:de|com|net|org|eu|info|biz|at|ch|co|group|io|app)\b', name, re.IGNORECASE):
         return None
     if name.lower().startswith(('http://', 'https://', 'www.')):
@@ -986,7 +985,6 @@ def extract_person_candidates(soup, page_type):
             role_score = ROLE_SCORES.get(matched_role, 50)
             potential_names_str = ROLE_REGEX.sub("", line_clean).strip(" :")
 
-            # Namensaufteilung bei mehreren Personen ("Michael Winter, Christian Alt")
             raw_sub_names = re.split(r'\b(?:und|sowie|&|;)\b|[,/|\n]', potential_names_str, flags=re.IGNORECASE)
             for sub_name in raw_sub_names:
                 cleaned_name = clean_person_name_string(sub_name)
@@ -1006,7 +1004,6 @@ def select_best_candidate(candidates, candidate_type="company"):
         raw_val = candidate.get("value", "")
         if not raw_val: continue
 
-        # TYP-SPEZIFISCHE BEREINIGUNG (Filterung verhindert versehentliches Löschen von E-Mails)
         if candidate_type == "person":
             val = strip_honorifics(raw_val)
             val = clean_person_name_string(val)
@@ -1116,14 +1113,26 @@ def select_best_company_for_query(query, candidates):
 
 
 def determine_match_status(resolved_info, company_match, has_email, has_phone, has_person):
+    is_direct = bool(resolved_info and resolved_info.get("source") == "direct_input")
+
     if resolved_info and resolved_info.get("rejected"):
         return "⚠️ Unsicherer Treffer"
-    if company_match and company_match.get("combined_score", 0) < 65:
-        return "⚠️ Unsicherer Treffer"
-    if company_match and has_email and has_phone: return "✅ Erfolg"
-    if company_match and has_email: return "🟢 E-Mail + Firma"
-    if company_match and has_phone: return "🟡 Telefon + Firma"
-    if company_match: return "🟠 Nur Firma"
+
+    # BEHOBEN: Bei Direkt-URL wird die Firmeneingabe automatisch als valider Kontext übernommen
+    has_company = (company_match is not None) or is_direct
+
+    if company_match:
+        company_score = company_match.get("combined_score", 0)
+        if company_score < 65 and not is_direct:
+            return "⚠️ Unsicherer Treffer"
+    elif not is_direct:
+        if not has_email and not has_phone and not has_person:
+            return "⚠️ Website erreichbar – Zuordnung unklar"
+
+    if has_company and has_email and has_phone: return "✅ Erfolg"
+    if has_company and has_email: return "🟢 E-Mail + Firma"
+    if has_company and has_phone: return "🟡 Telefon + Firma"
+    if has_company: return "🟠 Nur Firma"
     if has_email: return "🟢 Nur E-Mail"
     return "⚠️ Teilweise"
 
