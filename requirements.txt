@@ -1,7 +1,8 @@
 streamlit
 requests
-beautifulsoup4
+curl_cffi
 pandas
+beautifulsoup4
 duckduckgo-search
 openpyxl
-curl_cffi
+playwright
