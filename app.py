@@ -215,10 +215,9 @@ def find_website_from_name(query):
         if not query.startswith('http'): return "https://" + query
         return query
         
-    time.sleep(0.3)
+    time.sleep(0.2)
     
     try:
-        # Context-Manager schützt vor unendlicher I/O-Blockade bei Suchanfragen
         with DDGS() as ddgs:
             results = list(ddgs.text(query + " website OR impressum", max_results=2))
             for res in results:
@@ -257,7 +256,8 @@ def scrape_company(original_input):
     soups = []
     
     try:
-        res = requests.get(url, headers=headers, timeout=4, allow_redirects=True)
+        # Kurzer Timeout (2.5s) gegen Railway Gateway Timeouts
+        res = requests.get(url, headers=headers, timeout=2.5, allow_redirects=True)
         current_url = res.url
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -295,7 +295,7 @@ def scrape_company(original_input):
             break
             
         try:
-            r = requests.get(page, headers=headers, timeout=4)
+            r = requests.get(page, headers=headers, timeout=2.5)
             if r.status_code == 200:
                 soup_page = BeautifulSoup(r.text, 'html.parser')
                 soups.append(soup_page)
@@ -390,20 +390,45 @@ with col2:
 with col3:
     st.button("🗑️ Eingabe löschen", on_click=clear_input_box)
 
-# --- FORTSCHRITTSBALKEN & TIMER ---
+# --- LIVE FORTSCHRITTSANZEIGE & ECHTZEIT-TIMER ---
+
+progress_box = st.empty()
+
+def update_progress_ui():
+    if st.session_state.total_count > 0:
+        done = st.session_state.completed_count
+        total = st.session_state.total_count
+        progress = done / total
+        elapsed = int(time.time() - st.session_state.start_time) if st.session_state.start_time else 0
+        
+        # Restzeit-Berechnung (ETA)
+        if done > 0:
+            avg_per_lead = elapsed / done
+            remaining_leads = total - done
+            eta_seconds = int(remaining_leads * avg_per_lead)
+            eta_m, eta_s = divmod(eta_seconds, 60)
+            eta_str = f"ca. {eta_m}m {eta_s}s"
+        else:
+            eta_str = "Berechne..."
+
+        with progress_box.container():
+            st.progress(progress)
+            if st.session_state.state == "running":
+                st.markdown(
+                    f"⏱️ **Verstrichene Zeit:** {elapsed}s | "
+                    f"⏳ **Geschätzte Restzeit:** {eta_str} | "
+                    f"📊 **Fortschritt:** {done} von {total} Leads ({int(progress * 100)}%)"
+                )
+            elif st.session_state.state == "paused":
+                st.warning(
+                    f"⏸️ **Pausiert nach {elapsed}s:** {done} von {total} Leads verarbeitet ({int(progress * 100)}%). "
+                    f"Klicke auf '▶️ Fortsetzen', um weiterzumachen."
+                )
 
 if st.session_state.state in ["running", "paused"] or st.session_state.completed_count > 0:
-    progress = (st.session_state.completed_count / st.session_state.total_count) if st.session_state.total_count > 0 else 0
-    st.progress(progress)
-    
-    elapsed = int(time.time() - st.session_state.start_time) if st.session_state.start_time else 0
-    
-    if st.session_state.state == "running":
-        st.markdown(f"⏱️ **Verstrichene Zeit:** {elapsed}s | ⏳ **Fortschritt:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%)")
-    elif st.session_state.state == "paused":
-        st.warning(f"⏸️ **Pausiert nach {elapsed}s:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%). Klicke auf '▶️ Fortsetzen', um weiterzumachen.")
+    update_progress_ui()
 
-# --- BATCH PROCESSOR ---
+# --- BATCH PROCESSOR MIT LIVE-STREAMING ---
 
 if st.session_state.state == "running" and st.session_state.queue:
     batch_size = 5
@@ -415,6 +440,8 @@ if st.session_state.state == "running" and st.session_state.queue:
         for future in concurrent.futures.as_completed(future_to_input):
             st.session_state.results.append(future.result())
             st.session_state.completed_count += 1
+            # LIVE-UPDATE nach JEDEM EINZELNEN LEAD!
+            update_progress_ui()
             
     gc.collect() 
             
