@@ -36,8 +36,11 @@ GERMAN_STOPWORDS = {
     'alle', 'rechte', 'vorbehalten', 'copyright', 'seite', 'sehr', 'geehrte',
     'inhalte', 'haftung', 'links', 'urheberrecht', 'widerspruch', 'angaben',
     'erhältst', 'bekommst', 'zugangsdaten', 'gebäude', 'einem', 'einer', 'einen',
-    'eines', 'dass', 'wenn', 'bitte', 'diese', 'dieser', 'nach', 'oder'
+    'eines', 'dass', 'wenn', 'bitte', 'diese', 'dieser', 'nach', 'oder', 'home',
+    'startseite', 'index', 'welcome'
 }
+
+HONORIFICS = ['dr.', 'dr', 'prof.', 'prof', 'dipl.-ing.', 'dipl.-kfm.', 'herr', 'frau', 'mr.', 'mrs.', 'ms.']
 
 def decode_cloudflare_email(cf_hex):
     try:
@@ -137,19 +140,17 @@ def extract_phone_advanced(soup, text):
                 if res != "-": return res
     return "-"
 
-def is_valid_person_name(candidate_str):
-    words = [w.strip(".,:;()[]\"'") for w in candidate_str.split() if w.strip(".,:;()[]\"'")]
-    if not (2 <= len(words) <= 3):
-        return False
-        
-    for w in words:
-        w_lower = w.lower()
-        if w_lower in GERMAN_STOPWORDS or len(w) < 2:
-            return False
-        if not re.match(r'^[A-ZÄÖÜ][a-zäöüß\-]+$', w):
-            return False
-            
-    return " ".join(words)
+def clean_person_name_string(raw_name):
+    words = [w.strip(".,:;()[]\"'") for w in raw_name.split() if w.strip(".,:;()[]\"'")]
+    filtered = [w for w in words if w.lower() not in HONORIFICS]
+    if 2 <= len(filtered) <= 3:
+        for w in filtered:
+            if w.lower() in GERMAN_STOPWORDS or len(w) < 2:
+                return False
+            if not re.match(r'^[A-ZÄÖÜ][a-zäöüß\-]+$', w):
+                return False
+        return " ".join(filtered)
+    return False
 
 def extract_owner_advanced(soup, raw_html):
     if not raw_html: return "Unknown"
@@ -167,7 +168,8 @@ def extract_owner_advanced(soup, raw_html):
         'inhaberin', 'inhaber', 'inh.', 'gf', 'ceo', 'coo', 'cfo', 'vorstand',
         'prokurist', 'prokuristin', 'gründerin', 'gründer', 'founder', 'owner',
         'managing director', 'director', 'gesellschafterin', 'gesellschafter',
-        'komplementär', 'komplementärin', 'vertretungsberechtigt', 'ansprechpartner'
+        'komplementär', 'komplementärin', 'vertretungsberechtigt', 'ansprechpartner',
+        'angaben gemäß § 5 tmg', 'herausgeber'
     ]
 
     for i, line in enumerate(lines):
@@ -181,7 +183,7 @@ def extract_owner_advanced(soup, raw_html):
                     if corp_match: return corp_match.group(1).strip()
 
                 if after_role:
-                    valid_name = is_valid_person_name(after_role)
+                    valid_name = clean_person_name_string(after_role)
                     if valid_name: return valid_name
 
                 if i + 1 < len(lines):
@@ -190,7 +192,7 @@ def extract_owner_advanced(soup, raw_html):
                         corp_match = re.search(r'([A-ZÄÖÜ0-9][A-Za-z0-9ÄÖÜäöüß\s\.\&\-]+\s*(?:GmbH|AG|KG|Ltd|Holding))', next_line, re.IGNORECASE)
                         if corp_match: return corp_match.group(1).strip()
 
-                    valid_name = is_valid_person_name(next_line)
+                    valid_name = clean_person_name_string(next_line)
                     if valid_name: return valid_name
 
     return "Unknown"
@@ -203,6 +205,8 @@ def split_first_last_name(owner_str):
         return "-", owner_str
         
     parts = owner_str.strip().split()
+    parts = [p for p in parts if p.lower() not in HONORIFICS]
+    
     if len(parts) == 1:
         return "-", parts[0]
     elif len(parts) >= 2:
@@ -271,7 +275,11 @@ def scrape_company(original_input, serper_key=""):
     
     domain = urlparse(url).netloc.replace('www.', '')
     base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
-    company_name = original_input
+    
+    # Fallback Firmenname aus Domain generieren
+    fallback_company = domain.split('.')[0].capitalize()
+    company_name = original_input if original_input != url else fallback_company
+    
     html_texts = []
     soups = []
     candidate_links = []
@@ -288,10 +296,12 @@ def scrape_company(original_input, serper_key=""):
             if og_site and og_site.get('content'):
                 company_name = og_site['content'].strip()
             elif title_tag := soup.find('title'):
-                title_text = title_tag.text.split('|')[0].split('-')[0].strip()
-                if title_text: company_name = title_text
+                title_text = title_tag.text.split('|')[0].split('-')[0].split(':')[0].strip()
+                if title_text and title_text.lower() not in GERMAN_STOPWORDS:
+                    company_name = title_text
+                else:
+                    company_name = fallback_company
 
-            # Deutsch & Englisch Keywords für internationale Seiten
             keywords = [
                 'impressum', 'kontakt', 'contact', 'contact-us', 'imprint', 
                 'about', 'about-us', 'uber-uns', 'ueber-uns', 'team', 'legal', 
@@ -310,7 +320,6 @@ def scrape_company(original_input, serper_key=""):
     except Exception:
         pass
 
-    # Standard-Pfade (DE & EN)
     pages_to_check = [url] + candidate_links + [
         base_url + '/impressum', base_url + '/kontakt', 
         base_url + '/contact', base_url + '/contact-us',
@@ -406,7 +415,7 @@ def clear_input_box():
     st.session_state.lead_text_area = ""
 
 input_text = st.text_area(
-    "Leads eingeben (1 pro Zeile, max. 100 Einträge)", 
+    "Leads eingeben (1 pro Zeile, unbegrenzt)", 
     height=200, 
     placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com",
     key="lead_text_area"
@@ -418,10 +427,6 @@ with col1:
     if st.button("🚀 Neu Starten", type="primary"):
         lines = [line.strip() for line in input_text.split('\n') if line.strip()]
         if lines:
-            if len(lines) > 100:
-                st.warning("⚠️ Aus Stabilitätsgründen wurden nur die ersten 100 Leads übernommen.")
-                lines = lines[:100]
-                
             st.session_state.queue = lines
             st.session_state.results = []
             st.session_state.completed_count = 0
