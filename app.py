@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (UM ZOLL- & EXPORT-DATENBANKEN ERWEITERT)
+# PORTAL- UND FILTER-DOMAINEN (ERWEITERT UM INVESTOR- & REGISTERPORTALE)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -67,7 +67,8 @@ PORTAL_DOMAINS = [
     'tracxn.com', 'deutsche-exportdatenbank.de', 'rocketreach.co', 'bloomberg.com',
     'keytobavaria.com', 'service.gov.uk', 'foerderdatenbank.de', 'plant-my-tree.de',
     'implisense.com', 'exportgenius.in', 'railmarket.com', 'kompass.com', 'kompass.de',
-    'volza.com', 'tendata.com', 'importgenius.com', 'panjiva.com', 'dnb.com', 'dunsregistered.com'
+    'volza.com', 'tendata.com', 'importgenius.com', 'panjiva.com', 'dnb.com', 'dunsregistered.com',
+    'privco.com', 'creditsafe.com', 'europages.'
 ]
 
 AGENCY_KEYWORDS = [
@@ -304,9 +305,6 @@ def calculate_match_score(query, target_text):
     q_tokens = set(q_clean.split())
     t_tokens = set(t_clean.split())
     
-    if not q_tokens.intersection(t_tokens):
-        return 0
-
     fuzzy = difflib.SequenceMatcher(None, q_clean, t_clean).ratio() * 100
     token_score = token_overlap_score(query, target_text)
     combined = (fuzzy * 0.55 + token_score * 0.45)
@@ -971,7 +969,6 @@ def clean_person_name_string(raw_name):
     if not raw_name: return False
     raw_name = strip_honorifics(re.sub(r'\s+', ' ', str(raw_name)).strip())
     
-    # Bereinigung führender Rollenbezeichnungen und Artikel ("den Geschaeftsfuehrer: Stefan Lotz" -> "Stefan Lotz")
     raw_name = re.sub(r'^(?:den|der|die|des|dem|als|vom|im|durch|mit|von)\s+', '', raw_name, flags=re.IGNORECASE)
     raw_name = re.sub(r'^(?:geschaeftsfuehrer|geschäftsführer|inhaber|vorstand|prokurist|vertreten durch|ansprechpartner)\s*[:\.-]?\s*', '', raw_name, flags=re.IGNORECASE)
     
@@ -1107,7 +1104,7 @@ def score_company_identity(query, candidate_name):
             "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
         }
 
-    # Exakter Match
+    # Space-Insensitive Exact Match (z. B. "Germany BoBo Q GmbH" vs "Germany BoBoQ GmbH")
     if query_norm == candidate_norm or query_norm.replace(" ", "") == candidate_norm.replace(" ", ""):
         return {
             "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
@@ -1434,6 +1431,12 @@ serper_key = st.sidebar.text_input(
 if serper_key.strip():
     st.sidebar.success("✅ Serper API aktiv")
 
+filter_success_only = st.sidebar.checkbox(
+    "🎯 Nur erfolgreiche Ergebnisse anzeigen/exportieren",
+    value=False,
+    help="Filtert die Tabelle und den Export auf Leads mit erfolgreicher Zuordnung."
+)
+
 debug_mode = st.sidebar.checkbox(
     "🔍 Debug-Modus",
     help="Zeigt Suchkandidaten, Matching-Entscheidungen, Scores, Fehler und Datenquellen."
@@ -1554,10 +1557,16 @@ if st.session_state.state == "running" and st.session_state.queue:
 if st.session_state.results:
     df_raw = pd.DataFrame(st.session_state.results)
     export_cols = [c for c in df_raw.columns if not c.startswith("_")]
-    df_display = df_raw[export_cols].copy()
+    
+    if filter_success_only:
+        df_filtered = df_raw[df_raw["Status"].str.startswith(("✅", "🟢"), na=False)]
+    else:
+        df_filtered = df_raw
+
+    df_display = df_filtered[export_cols].copy()
     df_display.index = range(1, len(df_display) + 1)
 
-    st.subheader(f"📋 Ergebnisse Gesamt ({len(df_raw)} Leads)")
+    st.subheader(f"📋 Ergebnisse ({len(df_display)} von {len(df_raw)} Leads angezeigt)")
     st.dataframe(df_display, use_container_width=True, height=500)
 
     col_dl1, col_dl2 = st.columns([1, 1])
