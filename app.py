@@ -250,13 +250,13 @@ def scrape_company(original_input):
     
     domain = urlparse(url).netloc.replace('www.', '')
     base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
-    pages_to_check = [url, base_url]
     company_name = original_input
     html_texts = []
     soups = []
+    candidate_links = []
     
+    # 1. Hauptseite abrufen (Timeout 2.5s gegen Bot-Hänger)
     try:
-        # Kurzer Timeout (2.5s) gegen Railway Gateway Timeouts
         res = requests.get(url, headers=headers, timeout=2.5, allow_redirects=True)
         current_url = res.url
         if res.status_code == 200:
@@ -271,19 +271,32 @@ def scrape_company(original_input):
                 title_text = title_tag.text.split('|')[0].split('-')[0].strip()
                 if title_text: company_name = title_text
 
-            keywords = ['impressum', 'kontakt', 'contact', 'imprint']
+            # Relevanteste Links für Unterseiten sammeln
+            keywords = ['impressum', 'kontakt', 'contact', 'imprint', 'about', 'uber-uns', 'team', 'legal']
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag.get('href', '').lower()
                 text = a_tag.get_text().lower()
                 if any(k in href for k in keywords) or any(k in text for k in keywords):
-                    pages_to_check.append(urljoin(current_url, a_tag['href']))
-    except:
-        pages_to_check = [url]
+                    full_link = urljoin(current_url, a_tag['href'])
+                    if full_link not in candidate_links:
+                        candidate_links.append(full_link)
+                        if len(candidate_links) >= 4: # Max 4 Unterseiten-Links von Hauptseite übernehmen
+                            break
+    except Exception:
+        pass
 
-    pages_to_check.extend([base_url + '/impressum', base_url + '/kontakt'])
-    pages_to_check = list(set(pages_to_check))
+    # 2. Pfade zusammenführen und auf MAXIMAL 5 SEITEN begrenzen
+    pages_to_check = [url] + candidate_links + [base_url + '/impressum', base_url + '/kontakt', base_url + '/imprint']
     
-    for page in pages_to_check:
+    seen = set()
+    final_pages = []
+    for p in pages_to_check:
+        if p not in seen and len(final_pages) < 5: # Limit auf 5 Unterseiten!
+            seen.add(p)
+            final_pages.append(p)
+
+    # 3. Unterseiten mit Early-Exit abarbeiten
+    for page in final_pages[1:]:
         combined_temp = "\n".join(html_texts)
         temp_soup = soups[0] if soups else None
         
@@ -291,6 +304,7 @@ def scrape_company(original_input):
         curr_phone = extract_phone_advanced(temp_soup, combined_temp)
         curr_owner = extract_owner_advanced(temp_soup, combined_temp)
         
+        # Früher Abbruch, sobald E-Mail, Tel & Name vollständig sind
         if curr_emails != "-" and curr_phone != "-" and curr_owner != "Unknown":
             break
             
@@ -300,7 +314,8 @@ def scrape_company(original_input):
                 soup_page = BeautifulSoup(r.text, 'html.parser')
                 soups.append(soup_page)
                 html_texts.append(r.text)
-        except: continue
+        except Exception:
+            continue
             
     combined_html = "\n".join(html_texts)
     main_soup = soups[0] if soups else None
@@ -401,7 +416,6 @@ def update_progress_ui():
         progress = done / total
         elapsed = int(time.time() - st.session_state.start_time) if st.session_state.start_time else 0
         
-        # Restzeit-Berechnung (ETA)
         if done > 0:
             avg_per_lead = elapsed / done
             remaining_leads = total - done
@@ -440,7 +454,6 @@ if st.session_state.state == "running" and st.session_state.queue:
         for future in concurrent.futures.as_completed(future_to_input):
             st.session_state.results.append(future.result())
             st.session_state.completed_count += 1
-            # LIVE-UPDATE nach JEDEM EINZELNEN LEAD!
             update_progress_ui()
             
     gc.collect() 
