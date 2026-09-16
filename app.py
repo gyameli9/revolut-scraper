@@ -42,6 +42,8 @@ GERMAN_STOPWORDS = {
 
 HONORIFICS = ['dr.', 'dr', 'prof.', 'prof', 'dipl.-ing.', 'dipl.-kfm.', 'herr', 'frau', 'mr.', 'mrs.', 'ms.']
 
+INVALID_INPUT_PATTERNS = ['undefined', 'null', 'none', 'n/a', 'na', '-', 'no url', 'keine url', '']
+
 def decode_cloudflare_email(cf_hex):
     try:
         key = int(cf_hex[:2], 16)
@@ -254,6 +256,21 @@ def find_website_from_name(query, serper_key=""):
     return None
 
 def scrape_company(original_input, serper_key=""):
+    clean_check = original_input.strip().lower()
+
+    # SCHNELLER ABBRUCH: Prüft auf ungültige DB-Einträge ('undefined', 'null', etc.)
+    if not clean_check or clean_check in INVALID_INPUT_PATTERNS or 'undefined' in clean_check:
+        return {
+            "Vorname": "-",
+            "Nachname": "-",
+            "Unternehmensname": original_input,
+            "E-Mail-Adresse": "-",
+            "Telefonnummer": "-",
+            "Webseite": "-",
+            "Status": "❌ Keine URL/Eingabe",
+            "Eingabe": original_input
+        }
+
     url = find_website_from_name(original_input, serper_key)
     if not url:
         return {
@@ -276,7 +293,6 @@ def scrape_company(original_input, serper_key=""):
     domain = urlparse(url).netloc.replace('www.', '')
     base_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
     
-    # Fallback Firmenname aus Domain generieren
     fallback_company = domain.split('.')[0].capitalize()
     company_name = original_input if original_input != url else fallback_company
     
@@ -417,7 +433,7 @@ def clear_input_box():
 input_text = st.text_area(
     "Leads eingeben (1 pro Zeile, unbegrenzt)", 
     height=200, 
-    placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nhaecken.com",
+    placeholder="Müller Bau GmbH München\nwww.zalando.de\nHotel Adlon Berlin\nundefined",
     key="lead_text_area"
 )
 
