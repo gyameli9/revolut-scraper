@@ -250,7 +250,8 @@ def scrape_company(original_input):
     soups = []
     
     try:
-        res = requests.get(url, headers=headers, timeout=5, allow_redirects=True)
+        # Aggressiver Timeout (3 Sek.) für maximalen Speed
+        res = requests.get(url, headers=headers, timeout=3, allow_redirects=True)
         current_url = res.url
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -264,7 +265,7 @@ def scrape_company(original_input):
                 title_text = title_tag.text.split('|')[0].split('-')[0].strip()
                 if title_text: company_name = title_text
 
-            keywords = ['impressum', 'kontakt', 'contact', 'about', 'legal', 'imprint', 'team']
+            keywords = ['impressum', 'kontakt', 'contact', 'imprint']
             for a_tag in soup.find_all('a', href=True):
                 href = a_tag.get('href', '').lower()
                 text = a_tag.get_text().lower()
@@ -277,8 +278,19 @@ def scrape_company(original_input):
     pages_to_check = list(set(pages_to_check))
     
     for page in pages_to_check:
+        # EARLY EXIT: Wenn Mail, Telefon & Inhaber bereits gefunden wurden, Abbruch!
+        combined_temp = "\n".join(html_texts)
+        temp_soup = soups[0] if soups else None
+        
+        curr_emails = extract_all_emails_advanced(combined_temp, temp_soup, domain)
+        curr_phone = extract_phone_advanced(temp_soup, combined_temp)
+        curr_owner = extract_owner_advanced(temp_soup, combined_temp)
+        
+        if curr_emails != "-" and curr_phone != "-" and curr_owner != "Unknown":
+            break # Alle Daten da -> Zeit sparen!
+            
         try:
-            r = requests.get(page, headers=headers, timeout=5)
+            r = requests.get(page, headers=headers, timeout=3)
             if r.status_code == 200:
                 soup_page = BeautifulSoup(r.text, 'html.parser')
                 soups.append(soup_page)
@@ -382,14 +394,14 @@ if st.session_state.state in ["running", "paused"] or st.session_state.completed
     elif st.session_state.state == "paused":
         st.warning(f"⏸️ **Pausiert nach {elapsed}s:** {st.session_state.completed_count} von {st.session_state.total_count} Leads verarbeitet ({int(progress * 100)}%). Klicke auf '▶️ Fortsetzen', um weiterzumachen.")
 
-# --- BATCH PROCESSOR ---
+# --- BATCH PROCESSOR (TURBO: 10 LEADS PARALLEL) ---
 
 if st.session_state.state == "running" and st.session_state.queue:
-    batch_size = 5
+    batch_size = 10
     current_batch = st.session_state.queue[:batch_size]
     st.session_state.queue = st.session_state.queue[batch_size:]
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_input = {executor.submit(scrape_company, line): line for line in current_batch}
         for future in concurrent.futures.as_completed(future_to_input):
             st.session_state.results.append(future.result())
