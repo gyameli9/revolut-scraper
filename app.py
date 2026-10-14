@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN (EXPORTE, VERZEICHNISSE, REGISTER)
+# PORTAL- UND FILTER-DOMAINEN
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -197,6 +197,61 @@ ROLE_SCORES = {
     "ansprechpartner": 70,
     "ansprechpartnerin": 70
 }
+
+ROLE_PATTERN_STR = (
+    r"\b(?:"
+    + "|".join(re.escape(role) for role in ROLE_SCORES.keys())
+    + r")\b"
+)
+ROLE_REGEX = re.compile(ROLE_PATTERN_STR, re.IGNORECASE)
+
+
+# ==============================================================================
+# GEMINI KI-EXTRAKTOR
+# ==============================================================================
+
+def extract_with_gemini(text_content, company_query, gemini_key):
+    """
+    Verwendet Google Gemini API, um Impressen semantisch zu verstehen und strukturierte
+    Kontaktdaten (GF, Mail, Telefon, Firma) herauszulesen.
+    """
+    if not gemini_key or not text_content:
+        return None
+
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key.strip()}"
+    
+    prompt = (
+        f"Du bist ein B2B-Datenextraktor für deutsche Webseiten. Extrahiere aus dem folgenden Impressums-/Webseitentext "
+        f"die genauen Stammdaten für das gesuchte Unternehmen '{company_query}'.\n\n"
+        f"Antworte AUSSCHLIESSLICH im validen JSON-Format mit genau folgenden Feldern:\n"
+        f"- 'unternehmensname': Exakter rechtlicher Firmenname (z. B. 'Serwo GmbH', 'Germany BoBoQ GmbH'). Falls nicht auffindbar, null.\n"
+        f"- 'vorname': Vorname des Geschäftsführers, Inhabers oder Vorstands (z. B. 'Martin'). Falls mehrere Personen genannt sind, nimm den ersten. Falls nicht genannt, null.\n"
+        f"- 'nachname': Nachname des Geschäftsführers, Inhabers oder Vorstands (z. B. 'Scherer'). Falls nicht genannt, null.\n"
+        f"- 'email': Hauptkontakt-E-Mail (z. B. 'info@serwo.eu'). Falls keine existiert, null.\n"
+        f"- 'weitere_emails': Weitere gefundene E-Mails getrennt durch Komma, oder null.\n"
+        f"- 'telefon': Telefonnummer im Standard-Format (z. B. '+49 2171 50020'). Falls keine existiert, null.\n\n"
+        f"Hier ist der Text der Webseite:\n{text_content[:6500]}"
+    )
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.1
+        }
+    }
+
+    try:
+        req = c_requests.post if HAS_CURL_CFFI else requests.post
+        res = req(api_url, json=payload, timeout=12.0)
+        if res.status_code == 200:
+            res_data = res.json()
+            raw_json = res_data["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(raw_json)
+    except Exception:
+        pass
+    return None
+
 
 # ==============================================================================
 # TEXT & COMPANY NORMALIZATION
@@ -565,7 +620,7 @@ def resolve_company_to_website(query, serper_key="", debug_log=None):
 
 
 # ==============================================================================
-# HTTP FETCHING, RETRIES & PLAYWRIGHT
+# HTTP FETCHING & RETRIES
 # ==============================================================================
 
 USER_AGENT = (
@@ -581,8 +636,6 @@ DEFAULT_HEADERS = {
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive"
 }
-
-NO_RETRY_STATUS_CODES = {400, 401, 403, 404, 405, 410, 451}
 
 
 def create_http_session():
@@ -612,21 +665,6 @@ def build_request_kwargs(timeout):
     if HAS_CURL_CFFI:
         kwargs["impersonate"] = "chrome110"
     return kwargs
-
-
-def classify_http_error(status_code=0, exception=None):
-    if status_code:
-        if status_code == 403: return "FORBIDDEN"
-        if status_code == 404: return "NOT_FOUND"
-        if status_code == 429: return "RATE_LIMITED"
-        if 400 <= status_code < 500: return "CLIENT_ERROR"
-        if 500 <= status_code < 600: return "SERVER_ERROR"
-    if exception:
-        err = str(exception).lower()
-        if "timeout" in err or "timed out" in err: return "TIMEOUT"
-        if "ssl" in err or "cert" in err: return "SSL_ERROR"
-        if "connection" in err: return "CONNECTION_ERROR"
-    return "REQUEST_ERROR"
 
 
 def detect_spa_html(html_content):
@@ -716,7 +754,6 @@ def fetch_html_page(url, session=None, use_playwright=True):
         own_session = True
 
     try:
-        # HTTPS Try
         current = request_html_once(https_url, session, HTTP_TIMEOUT)
         result["attempts"].append(current)
 
@@ -729,7 +766,6 @@ def fetch_html_page(url, session=None, use_playwright=True):
             else:
                 return result
 
-        # HTTP Fallback
         if not result["html"]:
             current = request_html_once(http_url, session, HTTP_TIMEOUT)
             result["attempts"].append(current)
@@ -740,7 +776,6 @@ def fetch_html_page(url, session=None, use_playwright=True):
                 if not detect_spa_html(current["html"]):
                     return result
 
-        # Playwright Fallback
         if use_playwright and HAS_PLAYWRIGHT and (result["is_spa"] or not result["html"]):
             pw_res = safe_playwright_fetch(https_url)
             if pw_res["success"]:
@@ -817,7 +852,7 @@ def discover_internal_links(html_content, base_url, max_links=8):
 
 
 # ==============================================================================
-# EXTRACTION LOGIC (EMAILS, PHONES, COMPANIES, PERSONS)
+# FALLBACK EXTRACTION LOGIC (REGEX/DOM)
 # ==============================================================================
 
 def decode_cloudflare_email(cf_hex):
@@ -831,7 +866,6 @@ def extract_email_candidates(html_content, soup, page_url, page_type, site_domai
     candidates = []
     found_raw = []
     
-    # Cloudflare / Mailto
     if soup:
         for elem in soup.find_all(attrs={"data-cfemail": True}):
             dec = decode_cloudflare_email(elem['data-cfemail'])
@@ -842,14 +876,11 @@ def extract_email_candidates(html_content, soup, page_url, page_type, site_domai
                 em = href.split('mailto:')[-1].split('?')[0].strip()
                 if em: found_raw.append((em, "mailto"))
 
-    # Regex im reinen Textkörper (robuster)
     text = html.unescape(html_content or "")
     text = re.sub(r'(?i)\s*[\(\[]\s*at\s*[\)\]]\s*', '@', text)
     text = text.replace('&#64;', '@').replace('&#x40;', '@').replace('%40', '@')
-    
-    # Bessere Mail-Regex, die HTML-Tags und unsichtbare Zeichen ignoriert
-    clean_text_for_emails = re.sub(r'<[^>]+>', ' ', text)
-    for m in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', clean_text_for_emails):
+    clean_text = re.sub(r'<[^>]+>', ' ', text)
+    for m in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', clean_text):
         found_raw.append((m, "regex_body"))
 
     clean_dom = site_domain.lower().replace('www.', '')
@@ -1028,15 +1059,12 @@ def extract_person_candidates(soup, page_type):
     if not soup: return candidates
     page_bonus = PAGE_TYPE_SCORES.get(page_type.lower(), 15)
 
-    # BLOCK-ERKENNUNG (anstatt nur zeilenweise)
-    # Extrahiert den Namen, wenn er in der nächsten Zeile/im nächsten HTML-Block steht
     text = soup.get_text(separator="\n")
     role_block_pattern = r"(?:geschäftsführer(?:in)?|inhaber(?:in)?|vorstand|prokurist(?:in)?|vertreten durch)[\s\:\-]+(.*?)(?:\n\n|\n[A-ZÄÖÜ][a-zäöüß]+:|\Z)"
     
     matches = re.findall(role_block_pattern, text, re.IGNORECASE | re.DOTALL)
     for match in matches:
         names_text = match.strip()
-        # Trennung bei Zeilenumbrüchen (z. B. "Felix Schmuck \n Eik Lippmann")
         for line in names_text.split('\n'):
             line_clean = line.strip(" :,-")
             if not line_clean: continue
@@ -1052,7 +1080,6 @@ def extract_person_candidates(soup, page_type):
                         "source": f"block_{page_type}"
                     })
 
-    # Alte zeilenweise Erkennung als Fallback (falls der Block nicht gegriffen hat)
     for line in text.splitlines():
         line_clean = line.strip()
         if not line_clean: continue
@@ -1071,10 +1098,6 @@ def extract_person_candidates(soup, page_type):
                     candidates.append({"value": cleaned_name, "role": matched_role, "score": role_score + page_bonus, "source": f"dom_line_{page_type}"})
     return candidates
 
-
-# ==============================================================================
-# MATCHING & CANDIDATE SELECTION
-# ==============================================================================
 
 def select_best_candidate(candidates, candidate_type="company"):
     if not candidates: return None
@@ -1277,33 +1300,11 @@ def is_same_domain(url_a, url_b):
     return bool(domain_a and domain_b and (domain_a == domain_b or domain_a.endswith("." + domain_b) or domain_b.endswith("." + domain_a)))
 
 
-def search_email_in_google_index(domain, company_name, serper_key):
-    if not serper_key: return "-", None
-    domain = normalize_domain(f"https://{domain}")
-    if not domain: return "-", None
-    headers = {"X-API-KEY": serper_key.strip(), "Content-Type": "application/json"}
-    found = []
-    for query in [f'site:{domain} "@{domain}"', f'"{company_name}" "@{domain}"']:
-        try:
-            res = c_requests.post("https://google.serper.dev/search", headers=headers, json={"q": query, "num": 10}, timeout=8.0)
-            if res.status_code == 200:
-                for item in res.json().get("organic", []):
-                    combined = " ".join([item.get("title", ""), item.get("snippet", ""), item.get("link", "")])
-                    for em in re.findall(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", combined):
-                        em = em.lower().strip(".,;:()[]<>")
-                        if "@" in em and em.split("@", 1)[1] == domain and em not in found:
-                            found.append(em)
-        except Exception: continue
-    if not found: return "-", None
-    found.sort(key=lambda x: 100 if x.split("@")[0] in ["info", "kontakt", "contact", "office"] else 50, reverse=True)
-    return found[0], found
-
-
 # ==============================================================================
-# V3 MASTER PIPELINE
+# V3 MASTER PIPELINE (MIT GEMINI KI-INTEGRATION)
 # ==============================================================================
 
-def scrape_single_lead_v3(input_lead, serper_key="", debug_mode=False):
+def scrape_single_lead_v3(input_lead, serper_key="", gemini_key="", debug_mode=False):
     debug_log = {"input": input_lead, "pages_checked": [], "errors": [], "matching": {}}
 
     clean_check = input_lead.strip().lower()
@@ -1386,7 +1387,7 @@ def scrape_single_lead_v3(input_lead, serper_key="", debug_mode=False):
             try: return fetch_html_page(page_url, session=thread_session)
             finally: close_http_session(thread_session)
 
-        # REDUZIERT AUF 2 WORKERS (VERHINDERT RAM OVERFLOW)
+        # 2 Workers schützen vor Railway RAM OOM
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_map = {executor.submit(fetch_subpage, p): p for p in subpages}
             for future in concurrent.futures.as_completed(future_map):
@@ -1402,6 +1403,27 @@ def scrape_single_lead_v3(input_lead, serper_key="", debug_mode=False):
 
     close_http_session(session)
 
+    # 1. Den besten Text für Gemini ermitteln (Bevorzugt Impressum, dann Kontakt)
+    impressum_text = ""
+    for p_url, p_data in fetched_data.items():
+        ptype = classify_page_type(p_url)
+        if ptype in ["impressum", "legal"] and p_data.get("html"):
+            soup = BeautifulSoup(p_data["html"], "html.parser")
+            impressum_text = soup.get_text(separator="\n", strip=True)
+            break
+            
+    if not impressum_text and main_html:
+        soup = BeautifulSoup(main_html, "html.parser")
+        impressum_text = soup.get_text(separator="\n", strip=True)
+
+    # 2. KI-Extraktion durch Gemini versuchen
+    gemini_result = None
+    if gemini_key and impressum_text:
+        gemini_result = extract_with_gemini(impressum_text, input_lead, gemini_key)
+        if gemini_result:
+            debug_log["gemini_extracted"] = gemini_result
+
+    # 3. Fallback Regex/DOM Extraktion
     all_emails, all_phones, all_companies, all_persons = [], [], [], []
     for p_url, p_data in fetched_data.items():
         p_html = p_data.get("html", "")
@@ -1422,39 +1444,56 @@ def scrape_single_lead_v3(input_lead, serper_key="", debug_mode=False):
         try: all_persons.extend(extract_person_candidates(p_soup, p_type))
         except Exception as e: debug_log["errors"].append(f"Person: {str(e)}")
 
-    if not all_emails and serper_key:
-        g_em, _ = search_email_in_google_index(domain, input_lead, serper_key)
-        if g_em != "-": all_emails.append({"value": g_em, "score": 40, "source": "serper_google_index", "page": "search"})
-
     best_email = select_best_candidate(all_emails, candidate_type="email")
     best_phone = select_best_candidate(all_phones, candidate_type="phone")
     best_company = select_best_company_for_query(input_lead, all_companies)
     best_person = select_best_candidate(all_persons, candidate_type="person")
 
-    debug_log["matching"] = build_company_matching_debug(input_lead, all_companies, best_company)
-    debug_log["best_email"] = best_email
-    debug_log["best_phone"] = best_phone
-    debug_log["best_company"] = best_company
-    debug_log["best_person"] = best_person
-
-    primary_email = best_email["value"] if best_email else "-"
-    secondary_emails = "-"
-    if best_email:
-        others = [e["value"] for e in all_emails if e.get("value") and e["value"] != primary_email]
-        if others: secondary_emails = ", ".join(list(dict.fromkeys(others))[:3])
-
-    phone = best_phone["value"] if best_phone else "-"
-    company_val = best_company["value"] if best_company else (input_lead if res_info.get("source") == "direct_input" else "-")
-
+    # 4. Daten kombinieren (Gemini hat bei Personen & Details Vorrang!)
     first_name, last_name = "Unknown", "Unknown"
-    if best_person:
+    company_val = best_company["value"] if best_company else (input_lead if res_info.get("source") == "direct_input" else "-")
+    primary_email = best_email["value"] if best_email else "-"
+    phone = best_phone["value"] if best_phone else "-"
+    secondary_emails = "-"
+
+    if gemini_result:
+        # Person aus Gemini
+        g_fn = gemini_result.get("vorname")
+        g_ln = gemini_result.get("nachname")
+        if g_ln and g_ln != "null" and g_ln != "-":
+            first_name = g_fn if (g_fn and g_fn != "null") else "-"
+            last_name = g_ln
+        # Mail aus Gemini (falls im Regex nicht gefunden)
+        g_em = gemini_result.get("email")
+        if primary_email == "-" and g_em and "@" in g_em:
+            primary_email = g_em.strip()
+        # Telefon aus Gemini
+        g_ph = gemini_result.get("telefon")
+        if phone == "-" and g_ph and g_ph != "null":
+            phone = g_ph.strip()
+        # Firmenname aus Gemini
+        g_co = gemini_result.get("unternehmensname")
+        if company_val == "-" and g_co and g_co != "null":
+            company_val = g_co.strip()
+
+    # Fallback Person aus Regex/DOM, falls Gemini keine Person fand
+    if first_name == "Unknown" and best_person:
         parts = best_person["value"].split()
         if len(parts) == 1: first_name, last_name = "-", parts[0]
         else: first_name, last_name = " ".join(parts[:-1]), parts[-1]
 
+    if best_email:
+        others = [e["value"] for e in all_emails if e.get("value") and e["value"] != primary_email]
+        if others: secondary_emails = ", ".join(list(dict.fromkeys(others))[:3])
+
     status_val = determine_match_status(
-        res_info, best_company, primary_email != "-", phone != "-", best_person is not None
+        res_info, best_company, primary_email != "-", phone != "-", first_name != "Unknown"
     )
+
+    debug_log["matching"] = build_company_matching_debug(input_lead, all_companies, best_company)
+    debug_log["best_email"] = best_email
+    debug_log["best_phone"] = best_phone
+    debug_log["best_company"] = best_company
 
     gc.collect()
 
@@ -1472,15 +1511,24 @@ def scrape_single_lead_v3(input_lead, serper_key="", debug_mode=False):
 
 st.set_page_config(page_title="GYameli's Pro Scraper V3", page_icon="🚀", layout="wide")
 st.title("🚀 GYameli's Pro Scraper V3")
-st.caption("Website-Matching + Firmenidentifikation + Kontakt-Daten-Extraktion")
+st.caption("Website-Matching + Firmenidentifikation + KI-Kontakt-Extraktion")
 
 # SIDEBAR / EINSTELLUNGEN
 st.sidebar.header("⚙️ Einstellungen")
 
-serper_key = st.sidebar.text_input(
-    "Serper API Key",
+gemini_key = st.sidebar.text_input(
+    "Google Gemini API Key (KI-Extraktion)",
     type="password",
-    help="Optional: Wird für die Google-Suche und den E-Mail-Fallback verwendet."
+    help="Erkennt Ansprechpartner, Mails und Firmennamen per KI direkt aus Impressen."
+)
+
+if gemini_key.strip():
+    st.sidebar.success("✅ Gemini KI aktiv")
+
+serper_key = st.sidebar.text_input(
+    "Serper API Key (Optional für Google-Suche)",
+    type="password",
+    help="Wird für die Google-Suche verwendet. Falls leer, wird DuckDuckGo genutzt."
 )
 
 if serper_key.strip():
@@ -1571,14 +1619,14 @@ if st.session_state.state in ["running", "paused"] or st.session_state.completed
     update_progress_ui()
 
 if st.session_state.state == "running" and st.session_state.queue:
-    batch_size = 3
+    batch_size = 2
     current_batch = st.session_state.queue[:batch_size]
     st.session_state.queue = st.session_state.queue[batch_size:]
 
-    # REDUZIERT AUF 2 WORKERS (VERHINDERT RAM OVERFLOW AUF RAILWAY)
+    # 2 Workers schützen vor Railway RAM OOM
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_to_input = {
-            executor.submit(scrape_single_lead_v3, line, serper_key, debug_mode): line
+            executor.submit(scrape_single_lead_v3, line, serper_key, gemini_key, debug_mode): line
             for line in current_batch
         }
         for future in concurrent.futures.as_completed(future_to_input):
@@ -1610,6 +1658,7 @@ if st.session_state.results:
     
     st.subheader(f"📋 Ergebnisse ({len(df_raw)} Leads gesamt)")
     
+    # Interaktiver Filter für qualifizierte Leads
     filter_qualified = st.checkbox(
         "🎯 Filter aktivieren: Nur qualifizierte Leads anzeigen/exportieren (E-Mail Pflicht + Firmenname ODER Telefonnummer)",
         value=False,
