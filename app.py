@@ -198,14 +198,6 @@ ROLE_SCORES = {
     "ansprechpartnerin": 70
 }
 
-ROLE_PATTERN_STR = (
-    r"\b(?:"
-    + "|".join(re.escape(role) for role in ROLE_SCORES.keys())
-    + r")\b"
-)
-ROLE_REGEX = re.compile(ROLE_PATTERN_STR, re.IGNORECASE)
-
-
 # ==============================================================================
 # TEXT & COMPANY NORMALIZATION
 # ==============================================================================
@@ -838,6 +830,8 @@ def decode_cloudflare_email(cf_hex):
 def extract_email_candidates(html_content, soup, page_url, page_type, site_domain):
     candidates = []
     found_raw = []
+    
+    # Cloudflare / Mailto
     if soup:
         for elem in soup.find_all(attrs={"data-cfemail": True}):
             dec = decode_cloudflare_email(elem['data-cfemail'])
@@ -848,10 +842,14 @@ def extract_email_candidates(html_content, soup, page_url, page_type, site_domai
                 em = href.split('mailto:')[-1].split('?')[0].strip()
                 if em: found_raw.append((em, "mailto"))
 
+    # Regex im reinen Textkörper (robuster)
     text = html.unescape(html_content or "")
     text = re.sub(r'(?i)\s*[\(\[]\s*at\s*[\)\]]\s*', '@', text)
     text = text.replace('&#64;', '@').replace('&#x40;', '@').replace('%40', '@')
-    for m in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text):
+    
+    # Bessere Mail-Regex, die HTML-Tags und unsichtbare Zeichen ignoriert
+    clean_text_for_emails = re.sub(r'<[^>]+>', ' ', text)
+    for m in re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', clean_text_for_emails):
         found_raw.append((m, "regex_body"))
 
     clean_dom = site_domain.lower().replace('www.', '')
@@ -940,7 +938,6 @@ def extract_company_candidates(soup, page_type):
     candidates = []
     if not soup: return candidates
 
-    # 1. JSON-LD
     for script in soup.find_all('script', attrs={'type': re.compile(r'application/ld\+json', re.IGNORECASE)}):
         try:
             data = json.loads(script.string or script.get_text() or "{}")
@@ -957,12 +954,10 @@ def extract_company_candidates(soup, page_type):
             walk_org(data)
         except Exception: pass
 
-    # 2. og:site_name
     og_site = soup.find('meta', property='og:site_name')
     if og_site and og_site.get('content'):
         candidates.append({"value": og_site['content'].strip(), "score": 100, "source": "og:site_name", "page": page_type})
 
-    # 3. Title tag
     title = soup.find('title')
     if title:
         t_text = re.sub(r'\s+', ' ', title.get_text(' ', strip=True)).strip()
@@ -972,7 +967,6 @@ def extract_company_candidates(soup, page_type):
             if 3 <= len(p_clean) <= 80:
                 candidates.append({"value": p_clean, "score": 60, "source": "title_tag", "page": page_type})
 
-    # 4. Direkte Extraktion rechtlicher Firmennamen aus dem Fließtext/DOM (z. B. "Germany BoBoQ GmbH")
     text = soup.get_text(separator="\n")
     pattern = r'([A-ZÄÖÜa-zäöüß0-9\&\.\-\s]{2,60}?\s+(?:GmbH\s+\&\s+Co\.\s+KG|GmbH\s+\&\s+Co\s+KG|Gesellschaft\s+mit\s+beschränkter\s+Haftung|GmbH|AG|KG|UG\b|e\.K\.|Limited|Ltd|e\.V\.|OHG|GbR|mbH\b))'
     
@@ -1034,7 +1028,31 @@ def extract_person_candidates(soup, page_type):
     if not soup: return candidates
     page_bonus = PAGE_TYPE_SCORES.get(page_type.lower(), 15)
 
+    # BLOCK-ERKENNUNG (anstatt nur zeilenweise)
+    # Extrahiert den Namen, wenn er in der nächsten Zeile/im nächsten HTML-Block steht
     text = soup.get_text(separator="\n")
+    role_block_pattern = r"(?:geschäftsführer(?:in)?|inhaber(?:in)?|vorstand|prokurist(?:in)?|vertreten durch)[\s\:\-]+(.*?)(?:\n\n|\n[A-ZÄÖÜ][a-zäöüß]+:|\Z)"
+    
+    matches = re.findall(role_block_pattern, text, re.IGNORECASE | re.DOTALL)
+    for match in matches:
+        names_text = match.strip()
+        # Trennung bei Zeilenumbrüchen (z. B. "Felix Schmuck \n Eik Lippmann")
+        for line in names_text.split('\n'):
+            line_clean = line.strip(" :,-")
+            if not line_clean: continue
+            
+            raw_sub_names = re.split(r'\b(?:und|sowie|&|;)\b|[,/|]', line_clean, flags=re.IGNORECASE)
+            for sub_name in raw_sub_names:
+                cleaned_name = clean_person_name_string(sub_name)
+                if cleaned_name:
+                    candidates.append({
+                        "value": cleaned_name, 
+                        "role": "Geschäftsführung/Inhaber", 
+                        "score": 100 + page_bonus, 
+                        "source": f"block_{page_type}"
+                    })
+
+    # Alte zeilenweise Erkennung als Fallback (falls der Block nicht gegriffen hat)
     for line in text.splitlines():
         line_clean = line.strip()
         if not line_clean: continue
@@ -1050,7 +1068,7 @@ def extract_person_candidates(soup, page_type):
             for sub_name in raw_sub_names:
                 cleaned_name = clean_person_name_string(sub_name)
                 if cleaned_name:
-                    candidates.append({"value": cleaned_name, "role": matched_role, "score": role_score + page_bonus, "source": f"dom_{page_type}"})
+                    candidates.append({"value": cleaned_name, "role": matched_role, "score": role_score + page_bonus, "source": f"dom_line_{page_type}"})
     return candidates
 
 
@@ -1134,7 +1152,6 @@ def score_company_identity(query, candidate_name):
     q_tokens = set(query_norm.split())
     c_tokens = set(candidate_norm.split())
 
-    # Schutz vor Teilübereinstimmungen ("Bosswerk" vs "Boss")
     if not q_tokens.intersection(c_tokens):
         return {
             "score": 0, "exact": False, "reason": "no_token_overlap", "similarity": 0,
@@ -1143,7 +1160,6 @@ def score_company_identity(query, candidate_name):
             "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
         }
 
-    # Space-Insensitive Exact Match (z. B. "Germany BoBo Q GmbH" vs "Germany BoBoQ GmbH")
     if query_norm == candidate_norm or query_norm.replace(" ", "") == candidate_norm.replace(" ", ""):
         return {
             "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
@@ -1152,7 +1168,6 @@ def score_company_identity(query, candidate_name):
             "candidate_legal_terms": sorted(extract_company_legal_terms(candidate_name))
         }
 
-    # 100 % Wort-Übereinstimmung unabhängig von der Wortreihenfolge
     if q_tokens == c_tokens:
         return {
             "score": 100, "exact": True, "reason": "exact_or_near_exact", "similarity": 100,
@@ -1371,7 +1386,8 @@ def scrape_single_lead_v3(input_lead, serper_key="", debug_mode=False):
             try: return fetch_html_page(page_url, session=thread_session)
             finally: close_http_session(thread_session)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        # REDUZIERT AUF 2 WORKERS (VERHINDERT RAM OVERFLOW)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_map = {executor.submit(fetch_subpage, p): p for p in subpages}
             for future in concurrent.futures.as_completed(future_map):
                 req_url = future_map[future]
@@ -1559,7 +1575,8 @@ if st.session_state.state == "running" and st.session_state.queue:
     current_batch = st.session_state.queue[:batch_size]
     st.session_state.queue = st.session_state.queue[batch_size:]
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    # REDUZIERT AUF 2 WORKERS (VERHINDERT RAM OVERFLOW AUF RAILWAY)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_to_input = {
             executor.submit(scrape_single_lead_v3, line, serper_key, debug_mode): line
             for line in current_batch
@@ -1593,7 +1610,6 @@ if st.session_state.results:
     
     st.subheader(f"📋 Ergebnisse ({len(df_raw)} Leads gesamt)")
     
-    # Interaktiver Filter für qualifizierte Leads
     filter_qualified = st.checkbox(
         "🎯 Filter aktivieren: Nur qualifizierte Leads anzeigen/exportieren (E-Mail Pflicht + Firmenname ODER Telefonnummer)",
         value=False,
