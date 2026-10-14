@@ -50,7 +50,7 @@ DDG_LOCK = threading.Lock()
 
 
 # ==============================================================================
-# PORTAL- UND FILTER-DOMAINEN
+# PORTAL- UND FILTER-DOMAINEN (UM NEUE PORTALE ERWEITERT)
 # ==============================================================================
 
 PORTAL_DOMAINS = [
@@ -69,13 +69,15 @@ PORTAL_DOMAINS = [
     'implisense.com', 'exportgenius.in', 'railmarket.com', 'kompass.com', 'kompass.de',
     'volza.com', 'tendata.com', 'importgenius.com', 'panjiva.com', 'dnb.com', 'dunsregistered.com',
     'privco.com', 'creditsafe.com', 'europages.', 'firmendata.com', 'marktplatz-mittelstand.de',
-    'defirmenkataloge.com', 'directindustry.com', 'semi.org', 'assemcorp.com', '3d-peim.org'
+    'defirmenkataloge.com', 'directindustry.com', 'semi.org', 'assemcorp.com', '3d-peim.org',
+    'mynetfair.com', 'european-coatings-show.com' # <--- NEU HINZUGEFÜGT
 ]
 
 PORTAL_KEYWORDS = [
     'katalog', 'firmenkatalog', 'firmendata', 'mittelstand', 'company-profile',
     'yellowpages', 'tradekey', 'tradeindia', 'globalsources', 'importer', 'exporter',
-    'shipment', 'customs', 'business-index', 'company-information', 'branchen'
+    'shipment', 'customs', 'business-index', 'company-information', 'branchen',
+    'exhibitor', 'aussteller', 'messe'
 ]
 
 AGENCY_KEYWORDS = [
@@ -198,23 +200,12 @@ ROLE_SCORES = {
     "ansprechpartnerin": 70
 }
 
-ROLE_PATTERN_STR = (
-    r"\b(?:"
-    + "|".join(re.escape(role) for role in ROLE_SCORES.keys())
-    + r")\b"
-)
-ROLE_REGEX = re.compile(ROLE_PATTERN_STR, re.IGNORECASE)
-
 
 # ==============================================================================
-# GEMINI KI-EXTRAKTOR
+# GEMINI KI-EXTRAKTOR (GEFIXT: JSON MARKDOWN STRIPPER)
 # ==============================================================================
 
 def extract_with_gemini(text_content, company_query, gemini_key):
-    """
-    Verwendet Google Gemini API, um Impressen semantisch zu verstehen und strukturierte
-    Kontaktdaten (GF, Mail, Telefon, Firma) herauszulesen.
-    """
     if not gemini_key or not text_content:
         return None
 
@@ -224,12 +215,12 @@ def extract_with_gemini(text_content, company_query, gemini_key):
         f"Du bist ein B2B-Datenextraktor für deutsche Webseiten. Extrahiere aus dem folgenden Impressums-/Webseitentext "
         f"die genauen Stammdaten für das gesuchte Unternehmen '{company_query}'.\n\n"
         f"Antworte AUSSCHLIESSLICH im validen JSON-Format mit genau folgenden Feldern:\n"
-        f"- 'unternehmensname': Exakter rechtlicher Firmenname (z. B. 'Serwo GmbH', 'Germany BoBoQ GmbH'). Falls nicht auffindbar, null.\n"
-        f"- 'vorname': Vorname des Geschäftsführers, Inhabers oder Vorstands (z. B. 'Martin'). Falls mehrere Personen genannt sind, nimm den ersten. Falls nicht genannt, null.\n"
-        f"- 'nachname': Nachname des Geschäftsführers, Inhabers oder Vorstands (z. B. 'Scherer'). Falls nicht genannt, null.\n"
-        f"- 'email': Hauptkontakt-E-Mail (z. B. 'info@serwo.eu'). Falls keine existiert, null.\n"
-        f"- 'weitere_emails': Weitere gefundene E-Mails getrennt durch Komma, oder null.\n"
-        f"- 'telefon': Telefonnummer im Standard-Format (z. B. '+49 2171 50020'). Falls keine existiert, null.\n\n"
+        f"- 'unternehmensname': Exakter rechtlicher Firmenname. Falls nicht auffindbar, null.\n"
+        f"- 'vorname': Vorname des Geschäftsführers/Inhabers/Vorstands (z.B. 'Martin'). Wenn mehrere, nimm den ersten. Falls nicht genannt, null.\n"
+        f"- 'nachname': Nachname des Geschäftsführers/Inhabers/Vorstands (z.B. 'Scherer'). Falls nicht genannt, null.\n"
+        f"- 'email': Hauptkontakt-E-Mail. Falls keine existiert, null.\n"
+        f"- 'weitere_emails': Weitere E-Mails getrennt durch Komma, oder null.\n"
+        f"- 'telefon': Telefonnummer. Falls keine existiert, null.\n\n"
         f"Hier ist der Text der Webseite:\n{text_content[:6500]}"
     )
 
@@ -247,8 +238,12 @@ def extract_with_gemini(text_content, company_query, gemini_key):
         if res.status_code == 200:
             res_data = res.json()
             raw_json = res_data["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(raw_json)
-    except Exception:
+            
+            # WICHTIGER FIX: Entfernt Markdown-Backticks (```json ... ```), die Gemini oft mitsendet
+            clean_json = re.sub(r'^```(?:json)?\n?|```$', '', raw_json.strip(), flags=re.MULTILINE).strip()
+            
+            return json.loads(clean_json)
+    except Exception as e:
         pass
     return None
 
@@ -1060,26 +1055,6 @@ def extract_person_candidates(soup, page_type):
     page_bonus = PAGE_TYPE_SCORES.get(page_type.lower(), 15)
 
     text = soup.get_text(separator="\n")
-    role_block_pattern = r"(?:geschäftsführer(?:in)?|inhaber(?:in)?|vorstand|prokurist(?:in)?|vertreten durch)[\s\:\-]+(.*?)(?:\n\n|\n[A-ZÄÖÜ][a-zäöüß]+:|\Z)"
-    
-    matches = re.findall(role_block_pattern, text, re.IGNORECASE | re.DOTALL)
-    for match in matches:
-        names_text = match.strip()
-        for line in names_text.split('\n'):
-            line_clean = line.strip(" :,-")
-            if not line_clean: continue
-            
-            raw_sub_names = re.split(r'\b(?:und|sowie|&|;)\b|[,/|]', line_clean, flags=re.IGNORECASE)
-            for sub_name in raw_sub_names:
-                cleaned_name = clean_person_name_string(sub_name)
-                if cleaned_name:
-                    candidates.append({
-                        "value": cleaned_name, 
-                        "role": "Geschäftsführung/Inhaber", 
-                        "score": 100 + page_bonus, 
-                        "source": f"block_{page_type}"
-                    })
-
     for line in text.splitlines():
         line_clean = line.strip()
         if not line_clean: continue
@@ -1095,9 +1070,13 @@ def extract_person_candidates(soup, page_type):
             for sub_name in raw_sub_names:
                 cleaned_name = clean_person_name_string(sub_name)
                 if cleaned_name:
-                    candidates.append({"value": cleaned_name, "role": matched_role, "score": role_score + page_bonus, "source": f"dom_line_{page_type}"})
+                    candidates.append({"value": cleaned_name, "role": matched_role, "score": role_score + page_bonus, "source": f"dom_{page_type}"})
     return candidates
 
+
+# ==============================================================================
+# MATCHING & CANDIDATE SELECTION
+# ==============================================================================
 
 def select_best_candidate(candidates, candidate_type="company"):
     if not candidates: return None
@@ -1301,7 +1280,7 @@ def is_same_domain(url_a, url_b):
 
 
 # ==============================================================================
-# V3 MASTER PIPELINE (MIT GEMINI KI-INTEGRATION)
+# V3 MASTER PIPELINE
 # ==============================================================================
 
 def scrape_single_lead_v3(input_lead, serper_key="", gemini_key="", debug_mode=False):
@@ -1387,7 +1366,6 @@ def scrape_single_lead_v3(input_lead, serper_key="", gemini_key="", debug_mode=F
             try: return fetch_html_page(page_url, session=thread_session)
             finally: close_http_session(thread_session)
 
-        # 2 Workers schützen vor Railway RAM OOM
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_map = {executor.submit(fetch_subpage, p): p for p in subpages}
             for future in concurrent.futures.as_completed(future_map):
@@ -1403,7 +1381,7 @@ def scrape_single_lead_v3(input_lead, serper_key="", gemini_key="", debug_mode=F
 
     close_http_session(session)
 
-    # 1. Den besten Text für Gemini ermitteln (Bevorzugt Impressum, dann Kontakt)
+    # 1. Den besten Text für Gemini ermitteln
     impressum_text = ""
     for p_url, p_data in fetched_data.items():
         ptype = classify_page_type(p_url)
@@ -1463,7 +1441,7 @@ def scrape_single_lead_v3(input_lead, serper_key="", gemini_key="", debug_mode=F
         if g_ln and g_ln != "null" and g_ln != "-":
             first_name = g_fn if (g_fn and g_fn != "null") else "-"
             last_name = g_ln
-        # Mail aus Gemini (falls im Regex nicht gefunden)
+        # Mail aus Gemini
         g_em = gemini_result.get("email")
         if primary_email == "-" and g_em and "@" in g_em:
             primary_email = g_em.strip()
@@ -1476,7 +1454,6 @@ def scrape_single_lead_v3(input_lead, serper_key="", gemini_key="", debug_mode=F
         if company_val == "-" and g_co and g_co != "null":
             company_val = g_co.strip()
 
-    # Fallback Person aus Regex/DOM, falls Gemini keine Person fand
     if first_name == "Unknown" and best_person:
         parts = best_person["value"].split()
         if len(parts) == 1: first_name, last_name = "-", parts[0]
@@ -1623,7 +1600,6 @@ if st.session_state.state == "running" and st.session_state.queue:
     current_batch = st.session_state.queue[:batch_size]
     st.session_state.queue = st.session_state.queue[batch_size:]
 
-    # 2 Workers schützen vor Railway RAM OOM
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_to_input = {
             executor.submit(scrape_single_lead_v3, line, serper_key, gemini_key, debug_mode): line
@@ -1658,7 +1634,6 @@ if st.session_state.results:
     
     st.subheader(f"📋 Ergebnisse ({len(df_raw)} Leads gesamt)")
     
-    # Interaktiver Filter für qualifizierte Leads
     filter_qualified = st.checkbox(
         "🎯 Filter aktivieren: Nur qualifizierte Leads anzeigen/exportieren (E-Mail Pflicht + Firmenname ODER Telefonnummer)",
         value=False,
